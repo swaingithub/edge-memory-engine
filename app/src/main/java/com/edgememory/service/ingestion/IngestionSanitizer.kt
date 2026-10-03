@@ -64,7 +64,7 @@ object IngestionSanitizer {
 
     // Generic Indian Aadhaar Number (12 digits, often formatted as 4-4-4)
     private val AADHAAR_REGEX = Pattern.compile(
-        "\\b[2-9]{1}[0-9]{3}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}\\b"
+        "\\b[2-9]\\d{3}[ -]\\d{4}[ -]\\d{4}\\b"
     )
 
     // US Social Security Number (SSN: 3-2-4)

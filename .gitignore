@@ -1,0 +1,9 @@
+build/
+.gradle/
+.idea/
+Pods/
+DerivedData/
+*.bin
+*.onnx
+*.mlpackage
+xcuserdata/

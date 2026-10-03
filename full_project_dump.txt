@@ -1,0 +1,3222 @@
+﻿
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\build.gradle.kts ---
+
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.edgememory"
+    compileSdk = 34
+    
+    defaultConfig {
+        applicationId = "com.edgememory"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+        
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
+        }
+    }
+    
+    externalNativeBuild {
+        cmake {
+            path = file("CMakeLists.txt")
+        }
+    }
+    
+    buildFeatures {
+        compose = true
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.8" // Match with your Kotlin version
+    }
+}
+
+dependencies {
+    // 1. Encrypted Storage
+    implementation("net.zetetic:android-database-sqlcipher:4.5.4")
+    implementation("androidx.sqlite:sqlite-ktx:2.4.0")
+
+    // 2. Local Model Inference
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
+
+    // 3. Android Jetpack & Background Tasks
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.0")
+    
+    // 4. On-Device LLM (MediaPipe)
+    implementation("com.google.mediapipe:tasks-genai:0.10.14")
+
+    // Jetpack Compose & Material3
+    val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
+    implementation(composeBom)
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("androidx.compose.material:material-icons-extended")
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\CMakeLists.txt ---
+
+cmake_minimum_required(VERSION 3.18.1)
+project("native_hamming")
+
+add_library(
+        native_hamming
+        SHARED
+        src/main/cpp/hamming.cpp
+        src/main/cpp/native_bridge.cpp)
+
+# Apply ARM NEON flags only when compiling for arm64-v8a
+if (${ANDROID_ABI} STREQUAL "arm64-v8a")
+    target_compile_options(native_hamming PRIVATE -O3 -march=armv8-a+simd)
+elseif (${ANDROID_ABI} STREQUAL "armeabi-v7a")
+    target_compile_options(native_hamming PRIVATE -O3 -mfpu=neon)
+endif()
+
+find_library(log-lib log)
+target_link_libraries(native_hamming ${log-lib})
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\AndroidManifest.xml ---
+
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.edgememory">
+
+    <!-- Essential System Permissions -->
+    <!-- WakeLock & Boot: Allows WorkManager to perform idle event compaction -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- STRICT ZERO-MEDIA POLICY:
+         Notice that READ_EXTERNAL_STORAGE, READ_MEDIA_IMAGES,
+         READ_MEDIA_VIDEO, and CAMERA are deliberately ABSENT. -->
+
+    <application
+        android:name=".EdgeMemoryApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.EdgeMemoryEngine">
+
+        <!-- 1. Text Ingestion: Accessibility Service -->
+        <service
+            android:name=".service.ingestion.TextAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true"
+            android:label="@string/accessibility_service_label">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- 2. Text Ingestion: Notification Listener Service -->
+        <service
+            android:name=".service.ingestion.NotificationTrackerService"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true"
+            android:label="@string/notification_service_label">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- Main Dashboard Activity -->
+        <activity
+            android:name=".presentation.MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\assets\schema.sql ---
+
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+
+CREATE TABLE IF NOT EXISTS event_log (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_urn TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    source_app TEXT NOT NULL,
+    raw_text TEXT NOT NULL,
+    binary_embedding BLOB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_time ON event_log(entity_urn, timestamp ASC);
+CREATE INDEX IF NOT EXISTS idx_time ON event_log(timestamp DESC);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS event_fts USING fts5(
+    raw_text,
+    content='event_log',
+    content_rowid='event_id',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_event_ai AFTER INSERT ON event_log BEGIN
+    INSERT INTO event_fts(rowid, raw_text) VALUES (new.event_id, new.raw_text);
+END;
+
+CREATE TABLE IF NOT EXISTS daily_summaries (
+    day_date TEXT PRIMARY KEY,
+    summary_text TEXT NOT NULL,
+    summary_embedding BLOB NOT NULL
+);
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\cpp\hamming.cpp ---
+
+#include <arm_neon.h>
+#include <cstdint>
+
+// SIMD 128-bit XOR + POPCNT loop over 64 bytes
+extern "C" int compute_hamming_distance_simd(const uint8_t* q, const uint8_t* t) {
+    int distance = 0;
+    for (int i = 0; i < 64; i += 16) {
+        uint8x16_t vec_q = vld1q_u8(q + i);
+        uint8x16_t vec_t = vld1q_u8(t + i);
+        
+        uint8x16_t vec_xor = veorq_u8(vec_q, vec_t);
+        uint8x16_t vec_cnt = vcntq_u8(vec_xor);
+        
+        uint16x8_t sum1 = vpaddlq_u8(vec_cnt);
+        uint32x4_t sum2 = vpaddlq_u16(sum1);
+        uint32_t total = vgetq_lane_u32(sum2, 0) + vgetq_lane_u32(sum2, 1) + 
+                         vgetq_lane_u32(sum2, 2) + vgetq_lane_u32(sum2, 3);
+        
+        distance += total;
+    }
+    return distance;
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\cpp\native_bridge.cpp ---
+
+#include <jni.h>
+#include <cstdint>
+
+extern "C" int compute_hamming_distance_simd(const uint8_t* q, const uint8_t* t);
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_edgememory_data_native_NativeHamming_computeDistance(
+    JNIEnv* env,
+    jclass /* clazz */,
+    jbyteArray query_bytes,
+    jbyteArray target_bytes
+) {
+    if (query_bytes == nullptr || target_bytes == nullptr) return -1;
+    if (env->GetArrayLength(query_bytes) < 64 || env->GetArrayLength(target_bytes) < 64) return -1;
+
+    jbyte* query = env->GetByteArrayElements(query_bytes, nullptr);
+    jbyte* target = env->GetByteArrayElements(target_bytes, nullptr);
+
+    int distance = compute_hamming_distance_simd(
+        reinterpret_cast<const uint8_t*>(query),
+        reinterpret_cast<const uint8_t*>(target)
+    );
+
+    env->ReleaseByteArrayElements(query_bytes, query, JNI_ABORT);
+    env->ReleaseByteArrayElements(target_bytes, target, JNI_ABORT);
+
+    return distance;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_edgememory_data_native_NativeHamming_batchComputeDistances(
+        JNIEnv* env,
+        jclass clazz,
+        jbyteArray queryBlob,
+        jobjectArray candidateBlobsArray,
+        jintArray outDistances) {
+
+    if (queryBlob == nullptr || candidateBlobsArray == nullptr || outDistances == nullptr) return;
+    if (env->GetArrayLength(queryBlob) < 64) return;
+
+    jbyte* qPtr = env->GetByteArrayElements(queryBlob, nullptr);
+    const uint8_t* query = reinterpret_cast<const uint8_t*>(qPtr);
+
+    jsize count = env->GetArrayLength(candidateBlobsArray);
+    jint* distOut = env->GetIntArrayElements(outDistances, nullptr);
+
+    for (int i = 0; i < count; i++) {
+        auto cArray = (jbyteArray)env->GetObjectArrayElement(candidateBlobsArray, i);
+        if (cArray != nullptr && env->GetArrayLength(cArray) >= 64) {
+            jbyte* cPtr = env->GetByteArrayElements(cArray, nullptr);
+            distOut[i] = compute_hamming_distance_simd(query, reinterpret_cast<const uint8_t*>(cPtr));
+            env->ReleaseByteArrayElements(cArray, cPtr, JNI_ABORT);
+        } else {
+            distOut[i] = 512; // Assign max distance penalty if vector is malformed
+        }
+        if (cArray != nullptr) {
+            env->DeleteLocalRef(cArray);
+        }
+    }
+
+    env->ReleaseByteArrayElements(queryBlob, qPtr, JNI_ABORT);
+    env->ReleaseIntArrayElements(outDistances, distOut, 0);
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\EdgeMemoryApp.kt ---
+
+package com.edgememory
+
+import android.app.Application
+import android.util.Log
+import com.edgememory.domain.embedding.OnDeviceEmbedder
+import com.edgememory.domain.retriever.EventIngestionCoordinator
+import com.edgememory.data.local.EventLogDao
+import com.edgememory.data.local.DatabaseManager
+import com.edgememory.service.worker.NightlyCompactionWorker
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+
+class EdgeMemoryApp : Application() {
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    override fun onCreate() {
+        super.onCreate()
+        
+        // Initialize Core Dependencies
+        val dbManager = DatabaseManager.getInstance(applicationContext)
+        val eventLogDao = EventLogDao(dbManager)
+        val embedder = OnDeviceEmbedder(applicationContext)
+
+        // Inject dependencies into IngestionCoordinator singleton
+        EventIngestionCoordinator.dao = eventLogDao
+        EventIngestionCoordinator.embedder = embedder
+        
+        // Initialize ONNX runtime & Vocab asynchronously
+        appScope.launch {
+            try {
+                embedder.initialize()
+            } catch (e: Exception) {
+                Log.e("EdgeMemoryApp", "Failed to initialize embedder: ${e.message}")
+            }
+        }
+        
+        // Enqueue daily compaction under idle + charging constraints
+        NightlyCompactionWorker.schedule(applicationContext)
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\data\local\DatabaseManager.kt ---
+
+package com.edgememory.data.local
+
+import android.content.Context
+import android.content.SharedPreferences
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
+import net.sqlcipher.database.SQLiteDatabase
+import net.sqlcipher.database.SQLiteOpenHelper
+import java.security.KeyStore
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+
+class DatabaseManager private constructor(private val context: Context) {
+
+    private val dbHelper: EncryptedOpenHelper
+
+    init {
+        // 1. Initialize native SQLCipher binary libraries
+        SQLiteDatabase.loadLibs(context)
+
+        // 2. Resolve or generate hardware-backed database passphrase
+        val passphrase = KeyStoreHelper.getOrCreateDatabasePassphrase(context)
+
+        // 3. Initialize OpenHelper with WAL and SQLite configuration
+        dbHelper = EncryptedOpenHelper(context, passphrase)
+    }
+
+    /**
+     * Provides an active thread-safe read/write SQLCipher database connection.
+     */
+    fun getWritableDatabase(): SQLiteDatabase {
+        return dbHelper.writableDatabase
+    }
+
+    /**
+     * Provides an active thread-safe read-only SQLCipher database connection.
+     */
+    fun getReadableDatabase(): SQLiteDatabase {
+        return dbHelper.readableDatabase
+    }
+
+    companion object {
+        private const val DB_NAME = "edge_memory_encrypted.db"
+        private const val DB_VERSION = 1
+
+        @Volatile
+        private var INSTANCE: DatabaseManager? = null
+
+        fun getInstance(context: Context): DatabaseManager {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: DatabaseManager(context.applicationContext).also { INSTANCE = it }
+            }
+        }
+    }
+
+    /**
+     * Internal SQLiteOpenHelper implementation targeting SQLCipher.
+     */
+    private class EncryptedOpenHelper(
+        private val appContext: Context,
+        private val passphraseChars: CharArray
+    ) : SQLiteOpenHelper(appContext, DB_NAME, null, DB_VERSION) {
+
+        val writableDatabase: SQLiteDatabase
+            get() = getWritableDatabase(passphraseChars)
+
+        val readableDatabase: SQLiteDatabase
+            get() = getReadableDatabase(passphraseChars)
+
+        override fun onConfigure(db: SQLiteDatabase) {
+            super.onConfigure(db)
+            // Enable Write-Ahead Logging for non-blocking concurrent reads and writes
+            db.enableWriteAheadLogging()
+            db.execSQL("PRAGMA foreign_keys = ON;")
+            db.execSQL("PRAGMA synchronous = NORMAL;")
+        }
+
+        override fun onCreate(db: SQLiteDatabase) {
+            db.beginTransaction()
+            try {
+                // Read and execute initial DDL schema from assets/schema.sql
+                val schemaDdl = appContext.assets.open("schema.sql").bufferedReader().use { it.readText() }
+                
+                // Split multi-statement DDL by semicolon
+                schemaDdl.split(";")
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .forEach { sqlStatement ->
+                        db.execSQL(sqlStatement)
+                    }
+
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
+
+        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+            // Append-only invariant: Schema migrations strictly append new columns or indices
+        }
+    }
+
+    /**
+     * Manages hardware-backed KeyStore envelope encryption for the database passphrase.
+     */
+    private object KeyStoreHelper {
+        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        private const val MASTER_KEY_ALIAS = "edge_memory_master_key"
+        private const val PREFS_FILE = "edge_memory_vault_prefs"
+        private const val PREF_ENCRYPTED_PASSPHRASE = "enc_db_pass"
+        private const val PREF_GCM_IV = "enc_gcm_iv"
+        private const val GCM_TAG_LENGTH_BITS = 128
+        private const val AES_GCM_NO_PADDING = "AES/GCM/NoPadding"
+
+        fun getOrCreateDatabasePassphrase(context: Context): CharArray {
+            val prefs = context.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
+            val encPassphraseBase64 = prefs.getString(PREF_ENCRYPTED_PASSPHRASE, null)
+            val ivBase64 = prefs.getString(PREF_GCM_IV, null)
+
+            val masterKey = getOrCreateMasterKey()
+
+            return if (encPassphraseBase64 != null && ivBase64 != null) {
+                // Decrypt existing stored passphrase using hardware TEE key
+                val cipher = Cipher.getInstance(AES_GCM_NO_PADDING)
+                val iv = Base64.decode(ivBase64, Base64.NO_WRAP)
+                val spec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+                cipher.init(Cipher.DECRYPT_MODE, masterKey, spec)
+
+                val encryptedBytes = Base64.decode(encPassphraseBase64, Base64.NO_WRAP)
+                val rawPassphraseBytes = cipher.doFinal(encryptedBytes)
+
+                val chars = String(rawPassphraseBytes, Charsets.UTF_8).toCharArray()
+                rawPassphraseBytes.fill(0) // Clean sensitive bytes from memory
+                chars
+            } else {
+                // Generate a fresh cryptographically secure 64-byte passphrase
+                val rawPassphraseBytes = ByteArray(64)
+                SecureRandom().nextBytes(rawPassphraseBytes)
+
+                val cipher = Cipher.getInstance(AES_GCM_NO_PADDING)
+                cipher.init(Cipher.ENCRYPT_MODE, masterKey)
+                val iv = cipher.iv
+                val encryptedBytes = cipher.doFinal(rawPassphraseBytes)
+
+                // Persist encrypted envelope in private SharedPreferences
+                prefs.edit()
+                    .putString(PREF_ENCRYPTED_PASSPHRASE, Base64.encodeToString(encryptedBytes, Base64.NO_WRAP))
+                    .putString(PREF_GCM_IV, Base64.encodeToString(iv, Base64.NO_WRAP))
+                    .apply()
+
+                val chars = String(rawPassphraseBytes, Charsets.UTF_8).toCharArray()
+                rawPassphraseBytes.fill(0) // Clean sensitive bytes from memory
+                chars
+            }
+        }
+
+        private fun getOrCreateMasterKey(): SecretKey {
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            if (keyStore.containsAlias(MASTER_KEY_ALIAS)) {
+                val entry = keyStore.getEntry(MASTER_KEY_ALIAS, null) as KeyStore.SecretKeyEntry
+                return entry.secretKey
+            }
+
+            // Generate hardware-isolated master AES key inside TEE / StrongBox
+            val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+            val keyGenSpec = KeyGenParameterSpec.Builder(
+                MASTER_KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .setUserAuthenticationRequired(false) // Allows background workers to process without user unlock
+                .build()
+
+            keyGenerator.init(keyGenSpec)
+            return keyGenerator.generateKey()
+        }
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\data\local\EventLogDao.kt ---
+
+package com.edgememory.data.local
+
+import android.database.Cursor
+import com.edgememory.data.model.BinaryCandidate
+import com.edgememory.data.model.EventRecord
+import com.edgememory.data.model.FtsSearchResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import net.sqlcipher.database.SQLiteDatabase
+import net.sqlcipher.database.SQLiteStatement
+
+class EventLogDao(private val dbManager: DatabaseManager) {
+
+    // Precompiled reusable insert statement for maximum write throughput
+    private var insertStatement: SQLiteStatement? = null
+
+    private fun getOrCompileInsertStatement(db: SQLiteDatabase): SQLiteStatement {
+        return insertStatement ?: run {
+            val sql = """
+                INSERT INTO event_log (entity_urn, timestamp, action, source_app, raw_text, binary_embedding)
+                VALUES (?, ?, ?, ?, ?, ?);
+            """.trimIndent()
+            db.compileStatement(sql).also { insertStatement = it }
+        }
+    }
+
+    /**
+     * 1. Append-Only Insert
+     * Invariant: Never mutates existing rows. Inserts fresh chronological events.
+     */
+    suspend fun insertEvent(event: EventRecord): Long = withContext(Dispatchers.IO) {
+        val db = dbManager.getWritableDatabase()
+        db.beginTransaction()
+        try {
+            val stmt = getOrCompileInsertStatement(db)
+            stmt.bindString(1, event.entityUrn)
+            stmt.bindLong(2, event.timestamp)
+            stmt.bindString(3, event.action)
+            stmt.bindString(4, event.sourceApp)
+            stmt.bindString(5, event.rawText)
+            stmt.bindBlob(6, event.binaryEmbedding)
+
+            val rowId = stmt.executeInsert()
+            db.setTransactionSuccessful()
+            rowId
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /**
+     * 2. FTS5 BM25 Keyword Search
+     * Uses SQLite FTS5 rank function for exact token matching (PNRs, numbers, specific names).
+     */
+    suspend fun searchFts(query: String, limit: Int = 30): List<FtsSearchResult> = withContext(Dispatchers.IO) {
+        val db = dbManager.getReadableDatabase()
+        val results = mutableListOf<FtsSearchResult>()
+
+        // Sanitize query to avoid FTS5 syntax errors with special punctuation
+        val sanitizedQuery = query.replace("\"", "").trim()
+        if (sanitizedQuery.isBlank()) return@withContext emptyList()
+
+        val sql = """
+            SELECT 
+                e.event_id, 
+                e.entity_urn, 
+                e.raw_text, 
+                e.timestamp,
+                fts.rank AS bm25_rank
+            FROM event_fts fts
+            JOIN event_log e ON fts.rowid = e.event_id
+            WHERE event_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?;
+        """.trimIndent()
+
+        // Match query with prefix support for the final word
+        val ftsPattern = "$sanitizedQuery*"
+
+        db.rawQuery(sql, arrayOf(ftsPattern, limit.toString())).use { cursor ->
+            val idCol = cursor.getColumnIndexOrThrow("event_id")
+            val urnCol = cursor.getColumnIndexOrThrow("entity_urn")
+            val textCol = cursor.getColumnIndexOrThrow("raw_text")
+            val timeCol = cursor.getColumnIndexOrThrow("timestamp")
+            val rankCol = cursor.getColumnIndexOrThrow("bm25_rank")
+
+            while (cursor.moveToNext()) {
+                results.add(
+                    FtsSearchResult(
+                        eventId = cursor.getLong(idCol),
+                        entityUrn = cursor.getString(urnCol),
+                        rawText = cursor.getString(textCol),
+                        timestamp = cursor.getLong(timeCol),
+                        bm25Score = cursor.getDouble(rankCol)
+                    )
+                )
+            }
+        }
+        results
+    }
+
+    /**
+     * 3. Streamed Binary BLOB Candidate Extractor
+     * Pulls 64-byte vectors for the Stage-1 ARM NEON Hamming scan.
+     * Only extracts IDs, URNs, and BLOBs (omits bulky text to minimize memory allocation).
+     */
+    suspend fun loadBinaryCandidates(sinceTimestamp: Long = 0L): List<BinaryCandidate> = withContext(Dispatchers.IO) {
+        val db = dbManager.getReadableDatabase()
+        val candidates = mutableListOf<BinaryCandidate>()
+
+        val sql = """
+            SELECT event_id, entity_urn, binary_embedding 
+            FROM event_log 
+            WHERE timestamp >= ?
+            ORDER BY timestamp DESC;
+        """.trimIndent()
+
+        db.rawQuery(sql, arrayOf(sinceTimestamp.toString())).use { cursor ->
+            val idCol = cursor.getColumnIndexOrThrow("event_id")
+            val urnCol = cursor.getColumnIndexOrThrow("entity_urn")
+            val blobCol = cursor.getColumnIndexOrThrow("binary_embedding")
+
+            while (cursor.moveToNext()) {
+                candidates.add(
+                    BinaryCandidate(
+                        eventId = cursor.getLong(idCol),
+                        entityUrn = cursor.getString(urnCol),
+                        binaryEmbedding = cursor.getBlob(blobCol)
+                    )
+                )
+            }
+        }
+        candidates
+    }
+
+    /**
+     * 4. Chronological Entity History Fetcher
+     * Fetches the entire lifecycle of an entity (e.g. BOOKED -> RESCHEDULED -> CANCELLED).
+     */
+    suspend fun getEntityTimeline(entityUrn: String): List<EventRecord> = withContext(Dispatchers.IO) {
+        val db = dbManager.getReadableDatabase()
+        val timeline = mutableListOf<EventRecord>()
+
+        val sql = """
+            SELECT event_id, entity_urn, timestamp, action, source_app, raw_text, binary_embedding 
+            FROM event_log 
+            WHERE entity_urn = ? 
+            ORDER BY timestamp ASC;
+        """.trimIndent()
+
+        db.rawQuery(sql, arrayOf(entityUrn)).use { cursor ->
+            val idCol = cursor.getColumnIndexOrThrow("event_id")
+            val urnCol = cursor.getColumnIndexOrThrow("entity_urn")
+            val timeCol = cursor.getColumnIndexOrThrow("timestamp")
+            val actionCol = cursor.getColumnIndexOrThrow("action")
+            val appCol = cursor.getColumnIndexOrThrow("source_app")
+            val textCol = cursor.getColumnIndexOrThrow("raw_text")
+            val blobCol = cursor.getColumnIndexOrThrow("binary_embedding")
+
+            while (cursor.moveToNext()) {
+                timeline.add(
+                    EventRecord(
+                        eventId = cursor.getLong(idCol),
+                        entityUrn = cursor.getString(urnCol),
+                        timestamp = cursor.getLong(timeCol),
+                        action = cursor.getString(actionCol),
+                        sourceApp = cursor.getString(appCol),
+                        rawText = cursor.getString(textCol),
+                        binaryEmbedding = cursor.getBlob(blobCol)
+                    )
+                )
+            }
+        }
+        timeline
+    }
+
+    /**
+     * Fetches specific event records by their IDs (used to inflate top candidates).
+     */
+    suspend fun getEventsByIds(eventIds: List<Long>): List<EventRecord> = withContext(Dispatchers.IO) {
+        if (eventIds.isEmpty()) return@withContext emptyList()
+
+        val db = dbManager.getReadableDatabase()
+        val records = mutableListOf<EventRecord>()
+        val placeholders = eventIds.joinToString(",") { "?" }
+        val args = eventIds.map { it.toString() }.toTypedArray()
+
+        val sql = """
+            SELECT event_id, entity_urn, timestamp, action, source_app, raw_text, binary_embedding 
+            FROM event_log 
+            WHERE event_id IN ($placeholders)
+            ORDER BY timestamp ASC;
+        """.trimIndent()
+
+        db.rawQuery(sql, args).use { cursor ->
+            val idCol = cursor.getColumnIndexOrThrow("event_id")
+            val urnCol = cursor.getColumnIndexOrThrow("entity_urn")
+            val timeCol = cursor.getColumnIndexOrThrow("timestamp")
+            val actionCol = cursor.getColumnIndexOrThrow("action")
+            val appCol = cursor.getColumnIndexOrThrow("source_app")
+            val textCol = cursor.getColumnIndexOrThrow("raw_text")
+            val blobCol = cursor.getColumnIndexOrThrow("binary_embedding")
+
+            while (cursor.moveToNext()) {
+                records.add(
+                    EventRecord(
+                        eventId = cursor.getLong(idCol),
+                        entityUrn = cursor.getString(urnCol),
+                        timestamp = cursor.getLong(timeCol),
+                        action = cursor.getString(actionCol),
+                        sourceApp = cursor.getString(appCol),
+                        rawText = cursor.getString(textCol),
+                        binaryEmbedding = cursor.getBlob(blobCol)
+                    )
+                )
+            }
+        }
+        records
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\data\model\EventRecord.kt ---
+
+package com.edgememory.data.model
+
+data class EventRecord(
+    val eventId: Long = 0L,
+    val entityUrn: String,
+    val timestamp: Long,
+    val action: String,
+    val sourceApp: String,
+    val rawText: String,
+    val binaryEmbedding: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+        other as EventRecord
+        return eventId == other.eventId && binaryEmbedding.contentEquals(other.binaryEmbedding)
+    }
+
+    override fun hashCode(): Int {
+        var result = eventId.hashCode()
+        result = 31 * result + binaryEmbedding.contentHashCode()
+        return result
+    }
+}
+
+data class BinaryCandidate(
+    val eventId: Long,
+    val entityUrn: String,
+    val binaryEmbedding: ByteArray
+)
+
+data class FtsSearchResult(
+    val eventId: Long,
+    val entityUrn: String,
+    val rawText: String,
+    val timestamp: Long,
+    val bm25Score: Double
+)
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\data\native\NativeHamming.kt ---
+
+package com.edgememory.data.native
+
+object NativeHamming {
+    init {
+        System.loadLibrary("native_hamming")
+    }
+
+    /**
+     * Executes 128-bit ARM NEON SIMD XOR + POPCNT across two 64-byte packed BLOBs.
+     * Returns an integer Hamming distance between 0 and 512.
+     */
+    external fun computeDistance(blobA: ByteArray, blobB: ByteArray): Int
+
+    /**
+     * Batch evaluates queryBlob against an array of candidate BLOBs directly in C++.
+     * Minimizes JNI crossing overhead when scanning tens of thousands of rows.
+     */
+    external fun batchComputeDistances(
+        queryBlob: ByteArray,
+        candidateBlobs: Array<ByteArray>,
+        outDistances: IntArray
+    )
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\domain\embedding\OnDeviceEmbedder.kt ---
+
+package com.edgememory.domain.embedding
+
+import android.content.Context
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.io.Closeable
+import java.nio.LongBuffer
+import kotlin.math.sqrt
+
+/**
+ * Executes local text embedding inference using ONNX Runtime Mobile.
+ * Configured for 512-dimension zero-centered embedding models (e.g. BGE-Small / Nomic).
+ */
+class OnDeviceEmbedder(
+    private val context: Context,
+    private val modelAssetPath: String = "bge_small_quant.onnx"
+) : Closeable {
+
+    private val ortEnvironment: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private var ortSession: OrtSession? = null
+    private val sessionMutex = Mutex()
+    private val tokenizer = SimpleWordPieceTokenizer(context, "vocab.txt")
+
+    companion object {
+        private const val MAX_SEQ_LENGTH = 128
+        private const val EMBEDDING_DIM = 512
+    }
+
+    /**
+     * Initializes the ONNX session with hardware acceleration options.
+     */
+    suspend fun initialize() = withContext(Dispatchers.IO) {
+        sessionMutex.withLock {
+            if (ortSession != null) return@withLock
+
+            val sessionOptions = OrtSession.SessionOptions().apply {
+                // Try NNAPI for hardware acceleration; fallback to CPU automatically
+                try {
+                    addNnapi()
+                } catch (e: Exception) {
+                    setInterOpNumThreads(2)
+                    setIntraOpNumThreads(2)
+                }
+                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            }
+
+            val modelBytes = context.assets.open(modelAssetPath).use { it.readBytes() }
+            ortSession = ortEnvironment.createSession(modelBytes, sessionOptions)
+        }
+    }
+
+    /**
+     * Converts raw text into a normalized 512-dimensional float vector.
+     */
+    suspend fun embed(text: String): FloatArray = withContext(Dispatchers.Default) {
+        val session = sessionMutex.withLock {
+            ortSession ?: throw IllegalStateException("OnDeviceEmbedder is not initialized. Call initialize() first.")
+        }
+
+        // 1. Tokenize text into input_ids and attention_mask
+        val tokens = tokenizer.tokenize(text, MAX_SEQ_LENGTH)
+        val seqLength = tokens.inputIds.size.toLong()
+
+        val shape = longArrayOf(1, seqLength)
+        val inputIdsBuffer = LongBuffer.wrap(tokens.inputIds)
+        val attentionMaskBuffer = LongBuffer.wrap(tokens.attentionMask)
+        val tokenTypeIdsBuffer = LongBuffer.wrap(tokens.tokenTypeIds)
+
+        val inputIdsTensor = OnnxTensor.createTensor(ortEnvironment, inputIdsBuffer, shape)
+        val attentionMaskTensor = OnnxTensor.createTensor(ortEnvironment, attentionMaskBuffer, shape)
+        val tokenTypeTensor = OnnxTensor.createTensor(ortEnvironment, tokenTypeIdsBuffer, shape)
+
+        val inputs = mapOf(
+            "input_ids" to inputIdsTensor,
+            "attention_mask" to attentionMaskTensor,
+            "token_type_ids" to tokenTypeTensor
+        )
+
+        val rawLastHiddenState: Array<Array<FloatArray>>
+        try {
+            session.run(inputs).use { results ->
+                // Output shape: [batch_size=1, seq_len, hidden_dim=512]
+                @Suppress("UNCHECKED_CAST")
+                rawLastHiddenState = results[0].value as Array<Array<FloatArray>>
+            }
+        } finally {
+            inputIdsTensor.close()
+            attentionMaskTensor.close()
+            tokenTypeTensor.close()
+        }
+
+        // 2. Compute Mean Pooling across valid attention mask tokens
+        val pooled = meanPooling(rawLastHiddenState[0], tokens.attentionMask)
+
+        // 3. Apply L2 Unit Normalization (required for cosine and 1-bit zero-centering)
+        return@withContext l2Normalize(pooled)
+    }
+
+    private fun meanPooling(tokenEmbeddings: Array<FloatArray>, attentionMask: LongArray): FloatArray {
+        val result = FloatArray(EMBEDDING_DIM) { 0.0f }
+        var validTokenCount = 0.0f
+
+        for (i in attentionMask.indices) {
+            if (attentionMask[i] == 1L) {
+                val embedding = tokenEmbeddings[i]
+                for (d in 0 until EMBEDDING_DIM) {
+                    result[d] += embedding[d]
+                }
+                validTokenCount += 1.0f
+            }
+        }
+
+        if (validTokenCount > 0.0f) {
+            for (d in 0 until EMBEDDING_DIM) {
+                result[d] /= validTokenCount
+            }
+        }
+        return result
+    }
+
+    private fun l2Normalize(vector: FloatArray): FloatArray {
+        var sumSquares = 0.0f
+        for (v in vector) {
+            sumSquares += v * v
+        }
+        val norm = sqrt(sumSquares)
+        if (norm > 0.0f) {
+            for (i in vector.indices) {
+                vector[i] /= norm
+            }
+        }
+        return vector
+    }
+
+    override fun close() {
+        ortSession?.close()
+        ortSession = null
+        ortEnvironment.close()
+    }
+}
+
+/**
+ * Tokenization holder structure for Transformer models.
+ */
+data class TokenResult(
+    val inputIds: LongArray,
+    val attentionMask: LongArray,
+    val tokenTypeIds: LongArray
+)
+
+/**
+ * Lightweight WordPiece Tokenizer reading from assets/vocab.txt.
+ */
+class SimpleWordPieceTokenizer(context: Context, vocabFile: String) {
+    private val vocab = HashMap<String, Long>()
+
+    init {
+        context.assets.open(vocabFile).bufferedReader().useLines { lines ->
+            var idx = 0L
+            for (line in lines) {
+                val token = line.trim()
+                if (token.isNotEmpty()) {
+                    vocab[token] = idx++
+                }
+            }
+        }
+    }
+
+    fun tokenize(text: String, maxLength: Int): TokenResult {
+        val clsId = vocab["[CLS]"] ?: 101L
+        val sepId = vocab["[SEP]"] ?: 102L
+        val unkId = vocab["[UNK]"] ?: 100L
+        val padId = vocab["[PAD]"] ?: 0L
+
+        val words = text.lowercase().split(Regex("\\s+"))
+        val subTokens = mutableListOf<Long>()
+        subTokens.add(clsId)
+
+        for (word in words) {
+            if (subTokens.size >= maxLength - 1) break
+            val wordTokens = splitWordToPieces(word, unkId)
+            for (wt in wordTokens) {
+                if (subTokens.size < maxLength - 1) {
+                    subTokens.add(wt)
+                }
+            }
+        }
+        subTokens.add(sepId)
+
+        val totalLen = maxLength
+        val inputIds = LongArray(totalLen) { padId }
+        val attentionMask = LongArray(totalLen) { 0L }
+        val tokenTypeIds = LongArray(totalLen) { 0L }
+
+        for (i in subTokens.indices) {
+            inputIds[i] = subTokens[i]
+            attentionMask[i] = 1L
+        }
+
+        return TokenResult(inputIds, attentionMask, tokenTypeIds)
+    }
+
+    private fun splitWordToPieces(word: String, unkId: Long): List<Long> {
+        val result = mutableListOf<Long>()
+        var start = 0
+        while (start < word.length) {
+            var end = word.length
+            var matchedToken: Long? = null
+            var matchedSubstr = ""
+
+            while (start < end) {
+                val sub = if (start == 0) word.substring(start, end) else "##" + word.substring(start, end)
+                if (vocab.containsKey(sub)) {
+                    matchedToken = vocab[sub]
+                    matchedSubstr = sub
+                    break
+                }
+                end--
+            }
+
+            if (matchedToken == null) {
+                result.add(unkId)
+                break
+            } else {
+                result.add(matchedToken)
+                start += if (matchedSubstr.startsWith("##")) matchedSubstr.length - 2 else matchedSubstr.length
+            }
+        }
+        return result
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\domain\inference\OnDeviceLlmEngine.kt ---
+
+package com.edgememory.domain.inference
+
+import android.content.Context
+import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.withContext
+import java.io.File
+
+class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
+
+    private var llmInference: LlmInference? = null
+    private var isInitialized = false
+
+    suspend fun initialize(modelFileName: String = "llama-3.2-1b-it-gpu-int4.bin") = withContext(Dispatchers.IO) {
+        if (isInitialized) return@withContext
+
+        val modelDir = File(context.filesDir, "models")
+        if (!modelDir.exists()) modelDir.mkdirs()
+
+        val modelFile = File(modelDir, modelFileName)
+        if (!modelFile.exists()) {
+            // Return without crashing so FTS5 + 1-Bit search still functions
+            return@withContext
+        }
+
+        val options = LlmInference.LlmInferenceOptions.builder()
+            .setModelPath(modelFile.absolutePath)
+            .setMaxTokens(512)            // Bounded generation for mobile battery
+            .setTemperature(0.2f)         // Low temperature for factual precision
+            .setTopK(40)
+            .build()
+
+        llmInference = LlmInference.createFromOptions(context, options)
+        isInitialized = true
+    }
+
+    fun isReady(): Boolean = isInitialized && llmInference != null
+
+    /**
+     * Executes async streaming from the pre-allocated inference session.
+     */
+    fun generateAnswerStream(systemContext: String, userQuery: String): Flow<String> = callbackFlow {
+        val inference = llmInference
+        if (inference == null) {
+            close(IllegalStateException("LLM Engine not initialized"))
+            return@callbackFlow
+        }
+
+        val prompt = formatChatPrompt(systemContext, userQuery)
+
+        try {
+            val fullResponse = inference.generateResponse(prompt)
+            trySend(fullResponse)
+            channel.close()
+        } catch (e: Exception) {
+            close(e)
+        }
+
+        awaitClose { }
+    }.flowOn(Dispatchers.Default)
+
+    /**
+     * Non-streaming direct answer fallback.
+     */
+    suspend fun generateAnswer(systemContext: String, userQuery: String): String = withContext(Dispatchers.Default) {
+        val inference = llmInference ?: throw IllegalStateException("LLM Engine not initialized")
+        val prompt = formatChatPrompt(systemContext, userQuery)
+        inference.generateResponse(prompt)
+    }
+
+    private fun formatChatPrompt(timelineContext: String, userQuery: String): String {
+        return """
+            <|begin_of_text|><|start_header_id|>system<|end_header_id|>
+            You are a private on-device memory assistant. Answer the user question accurately using ONLY the logged activity timeline below.
+            
+            RULES:
+            1. If an event or booking was rescheduled or changed, state BOTH original and updated information clearly.
+            2. If the context does not contain the answer, reply: "I do not have record of that in your logged activity."
+            
+            HISTORICAL TIMELINE:
+            $timelineContext
+            <|eot_id|><|start_header_id|>user<|end_header_id|>
+            $userQuery<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+        """.trimIndent()
+    }
+
+    override fun close() {
+        llmInference?.close()
+        llmInference = null
+        isInitialized = false
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\domain\quantization\BitPacker.kt ---
+
+package com.edgememory.domain.quantization
+
+/**
+ * Pillar 7: BitPacker
+ * Converts the 512 raw float output of the ONNX embedder into an exact 64-byte ByteArray.
+ */
+object BitPacker {
+    
+    /**
+     * Quantizes float > 0.0f ? 1 : 0
+     */
+    fun pack(embeddings: FloatArray): ByteArray {
+        require(embeddings.size == 512) { "Must be exactly 512 dimensions" }
+        val result = ByteArray(64)
+        for (byteIndex in 0 until 64) {
+            var currentByte = 0
+            val offset = byteIndex * 8
+            for (bitIndex in 0 until 8) {
+                if (embeddings[offset + bitIndex] > 0.0f) {
+                    currentByte = currentByte or (1 shl (7 - bitIndex))
+                }
+            }
+            result[byteIndex] = currentByte.toByte()
+        }
+        return result
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\domain\retriever\CascadedRetriever.kt ---
+
+package com.edgememory.domain.retriever
+
+import com.edgememory.data.local.EventLogDao
+import com.edgememory.data.model.EventRecord
+import com.edgememory.data.model.FtsSearchResult
+import com.edgememory.data.native.NativeHamming
+import com.edgememory.domain.embedding.OnDeviceEmbedder
+import com.edgememory.domain.quantization.BitPacker
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
+
+data class ScoredCandidate(
+    val eventId: Long,
+    val entityUrn: String,
+    val rrfScore: Double
+)
+
+data class RetrievalContext(
+    val primaryEvents: List<EventRecord>,
+    val entityTimelines: Map<String, List<EventRecord>>,
+    val formattedTimelinePrompt: String
+)
+
+class CascadedRetriever(
+    private val eventLogDao: EventLogDao,
+    private val embedder: OnDeviceEmbedder
+) {
+
+    companion object {
+        private const val RRF_K = 60.0             // Standard Cormack RRF smoothing constant
+        private const val STAGE1_TOP_K = 50        // Candidate pool size per channel
+        private const val FINAL_ENTITY_LIMIT = 3   // Top distinct entities to hydrate
+    }
+
+    /**
+     * Executes the hybrid search cascade:
+     * 1. Query Embedding & 1-Bit Binarization
+     * 2. Parallel FTS5 BM25 + Native ARM NEON Hamming scan
+     * 3. Reciprocal Rank Fusion (RRF)
+     * 4. Entity timeline hydration for SLM context
+     */
+    suspend fun retrieve(queryText: String): RetrievalContext = coroutineScope {
+        // Step 1: Generate query 1-bit binary vector
+        val queryFloats = embedder.embed(queryText)
+        val queryBlob = BitPacker.pack(queryFloats) // Renamed from packFloatsTo1Bit to match actual code
+
+        // Step 2: Parallel execution of Sparse (FTS5) and Dense (1-Bit) channels
+        val ftsDeferred = async(Dispatchers.IO) {
+            eventLogDao.searchFts(queryText, limit = STAGE1_TOP_K)
+        }
+
+        val binaryDeferred = async(Dispatchers.Default) {
+            runBinaryHammingScan(queryBlob, topK = STAGE1_TOP_K)
+        }
+
+        val ftsResults = ftsDeferred.await()
+        val binaryResults = binaryDeferred.await()
+
+        // Step 3: Reciprocal Rank Fusion (RRF)
+        val fusedCandidates = fuseRankings(ftsResults, binaryResults)
+
+        // Step 4: Extract top unique entities and fetch chronological histories
+        val topEntityUrns = fusedCandidates
+            .map { it.entityUrn }
+            .distinct()
+            .take(FINAL_ENTITY_LIMIT)
+
+        val entityTimelines = mutableMapOf<String, List<EventRecord>>()
+        for (urn in topEntityUrns) {
+            val timeline = eventLogDao.getEntityTimeline(urn)
+            if (timeline.isNotEmpty()) {
+                entityTimelines[urn] = timeline
+            }
+        }
+
+        // Inflate primary hit records
+        val primaryEventIds = fusedCandidates.take(10).map { it.eventId }
+        val primaryEvents = eventLogDao.getEventsByIds(primaryEventIds)
+
+        // Format chronological timeline string for local SLM prompt
+        val formattedPrompt = buildChronologicalContext(entityTimelines, primaryEvents)
+
+        RetrievalContext(
+            primaryEvents = primaryEvents,
+            entityTimelines = entityTimelines,
+            formattedTimelinePrompt = formattedPrompt
+        )
+    }
+
+    /**
+     * Executes fast native ARM NEON SIMD Hamming distance over stored 64-byte BLOBs.
+     */
+    private suspend fun runBinaryHammingScan(
+        queryBlob: ByteArray,
+        topK: Int
+    ): List<Pair<Long, String>> = withContext(Dispatchers.Default) {
+        val candidates = eventLogDao.loadBinaryCandidates()
+        if (candidates.isEmpty()) return@withContext emptyList()
+
+        val count = candidates.size
+        val distances = IntArray(count)
+        val candidateBlobs = Array(count) { candidates[it].binaryEmbedding }
+
+        // Run batch C++ ARM NEON popcount
+        NativeHamming.batchComputeDistances(queryBlob, candidateBlobs, distances)
+
+        // Find top-K smallest Hamming distances
+        return@withContext candidates.indices
+            .asSequence()
+            .map { idx -> Triple(candidates[idx].eventId, candidates[idx].entityUrn, distances[idx]) }
+            .sortedBy { it.third } // Ascending distance (0 = identical)
+            .take(topK)
+            .map { Pair(it.first, it.second) }
+            .toList()
+    }
+
+    /**
+     * Merges FTS5 BM25 ranks and 1-Bit Hamming ranks using Reciprocal Rank Fusion.
+     */
+    private fun fuseRankings(
+        ftsHits: List<FtsSearchResult>,
+        binaryHits: List<Pair<Long, String>>
+    ): List<ScoredCandidate> {
+        val rrfScoreMap = mutableMapOf<Long, Double>()
+        val urnMap = mutableMapOf<Long, String>()
+
+        // Accumulate FTS ranks (1-based index)
+        ftsHits.forEachIndexed { rank, hit ->
+            val score = 1.0 / (RRF_K + (rank + 1))
+            rrfScoreMap[hit.eventId] = (rrfScoreMap[hit.eventId] ?: 0.0) + score
+            urnMap[hit.eventId] = hit.entityUrn
+        }
+
+        // Accumulate Binary Hamming ranks (1-based index)
+        binaryHits.forEachIndexed { rank, hit ->
+            val eventId = hit.first
+            val score = 1.0 / (RRF_K + (rank + 1))
+            rrfScoreMap[eventId] = (rrfScoreMap[eventId] ?: 0.0) + score
+            urnMap[eventId] = hit.second
+        }
+
+        return rrfScoreMap.entries
+            .asSequence()
+            .map { entry ->
+                ScoredCandidate(
+                    eventId = entry.key,
+                    entityUrn = urnMap[entry.key] ?: "unknown",
+                    rrfScore = entry.value
+                )
+            }
+            .sortedByDescending { it.rrfScore }
+            .toList()
+    }
+
+    /**
+     * Assembles a structured, chronological text timeline for the SLM prompt context.
+     */
+    private fun buildChronologicalContext(
+        timelines: Map<String, List<EventRecord>>,
+        standaloneEvents: List<EventRecord>
+    ): String {
+        val sb = StringBuilder()
+
+        if (timelines.isNotEmpty()) {
+            sb.append("HISTORICAL TIMELINES BY ENTITY:\n")
+            for ((urn, events) in timelines) {
+                sb.append("--- Entity: $urn ---\n")
+                for (event in events) {
+                    val dateStr = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+                        .format(java.util.Date(event.timestamp))
+                    sb.append("  - [$dateStr] ACTION: ${event.action} | APP: ${event.sourceApp} | DETAILS: ${event.rawText}\n")
+                }
+            }
+        } else if (standaloneEvents.isNotEmpty()) {
+            sb.append("RELEVANT LOGGED EVENTS:\n")
+            for (event in standaloneEvents.sortedBy { it.timestamp }) {
+                val dateStr = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+                    .format(java.util.Date(event.timestamp))
+                sb.append("  - [$dateStr] ACTION: ${event.action} | DETAILS: ${event.rawText}\n")
+            }
+        } else {
+            sb.append("No matching activity logs found.")
+        }
+
+        return sb.toString()
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\domain\retriever\EventIngestionCoordinator.kt ---
+
+package com.edgememory.domain.retriever
+
+import android.util.Log
+import com.edgememory.data.local.EventLogDao
+import com.edgememory.domain.embedding.OnDeviceEmbedder
+import com.edgememory.domain.quantization.BitPacker
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+
+object EventIngestionCoordinator {
+    private const val TAG = "EventIngestion"
+    
+    // Persistent managed scope for background ingestion jobs
+    private val coordinatorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    var embedder: OnDeviceEmbedder? = null
+    var dao: EventLogDao? = null
+
+    fun enqueueEvent(sourceApp: String, action: String, rawText: String, timestamp: Long) {
+        Log.d(TAG, "Ingested [$action] from $sourceApp ($timestamp): ${rawText.take(60)}...")
+
+        coordinatorScope.launch {
+            try {
+                val safeEmbedder = embedder ?: run {
+                    Log.w(TAG, "Embedder is null. Dropping event.")
+                    return@launch
+                }
+                
+                val safeDao = dao ?: run {
+                    Log.w(TAG, "Dao is null. Dropping event.")
+                    return@launch
+                }
+
+                // 1. Generate 512 FP32 values on-device
+                val floatEmbedding = safeEmbedder.embed(rawText)
+
+                // 2. Binarize to 64-byte packed BLOB
+                val binaryBlob = BitPacker.pack(floatEmbedding)
+
+                // 3. Write directly to encrypted SQLite table
+                safeDao.insertEvent(
+                    com.edgememory.data.model.EventRecord(
+                        entityUrn = "urn:app:$sourceApp",
+                        timestamp = timestamp,
+                        action = action,
+                        sourceApp = sourceApp,
+                        rawText = rawText,
+                        binaryEmbedding = binaryBlob
+                    )
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to embed and persist event: ${e.message}", e)
+            }
+        }
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\presentation\MainActivity.kt ---
+
+package com.edgememory.presentation
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import com.edgememory.data.local.DatabaseManager
+import com.edgememory.data.local.EventLogDao
+import com.edgememory.domain.embedding.OnDeviceEmbedder
+import com.edgememory.domain.retriever.CascadedRetriever
+import com.edgememory.domain.retriever.EventIngestionCoordinator
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import androidx.compose.material3.MaterialTheme
+
+class MainActivity : ComponentActivity() {
+
+    private lateinit var embedder: OnDeviceEmbedder
+    private lateinit var llmEngine: com.edgememory.domain.inference.OnDeviceLlmEngine
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Initialize dependencies
+        val dbManager = DatabaseManager.getInstance(applicationContext)
+        val eventLogDao = EventLogDao(dbManager)
+        embedder = EventIngestionCoordinator.embedder ?: OnDeviceEmbedder(applicationContext).also {
+            CoroutineScope(Dispatchers.IO).launch { it.initialize() }
+        }
+        llmEngine = com.edgememory.domain.inference.OnDeviceLlmEngine(applicationContext)
+
+        val retriever = CascadedRetriever(eventLogDao, embedder)
+
+        val viewModel = ViewModelProvider(
+            this,
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    return MemorySearchViewModel(retriever, llmEngine) as T
+                }
+            }
+        )[MemorySearchViewModel::class.java]
+
+        setContent {
+            MaterialTheme {
+                MemorySearchScreen(viewModel = viewModel)
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        llmEngine.close()
+        // Do NOT call embedder.close() here as the background ingestion service still uses it!
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\presentation\MemorySearchScreen.kt ---
+
+package com.edgememory.presentation
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.edgememory.data.model.EventRecord
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MemorySearchScreen(
+    viewModel: MemorySearchViewModel,
+    modifier: Modifier = Modifier
+) {
+    val query by viewModel.searchQuery.collectAsState()
+    val state by viewModel.uiState.collectAsState()
+    val streamedAnswer by viewModel.streamedAnswer.collectAsState()
+    val isGenerating by viewModel.isGenerating.collectAsState()
+    var showPromptDebug by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Edge Memory Test Bench", fontWeight = FontWeight.Bold) },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            )
+        },
+        modifier = modifier
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(16.dp)
+        ) {
+            // Search Input Box
+            OutlinedTextField(
+                value = query,
+                onValueChange = { viewModel.onQueryChanged(it) },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Ask your memory (e.g. Kanpur train, booking)") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { viewModel.onQueryChanged("") }) {
+                            Icon(Icons.Default.Clear, contentDescription = "Clear")
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp)
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Body Area
+            when (val s = state) {
+                is SearchUiState.Idle -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("Enter a query to test 1-bit SIMD + FTS5 retrieval", color = Color.Gray)
+                    }
+                }
+                is SearchUiState.Searching -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
+                is SearchUiState.Empty -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No matching events found (${s.latencyMs} ms)", color = Color.Gray)
+                    }
+                }
+                is SearchUiState.Error -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("Error: ${s.message}", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                is SearchUiState.Success -> {
+                    // Performance Latency Header
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Retrieved in ${s.latencyMs} ms",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
+                        )
+
+                        TextButton(onClick = { showPromptDebug = !showPromptDebug }) {
+                            Text(if (showPromptDebug) "Hide Prompt Context" else "View SLM Context")
+                        }
+                    }
+
+                    // Collapsible Raw SLM Prompt Context
+                    AnimatedVisibility(visible = showPromptDebug) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = s.promptContext,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Ai Answer Card
+                    AiAnswerCard(answer = streamedAnswer, isGenerating = isGenerating)
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Chronological Timeline Results
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        if (s.entityTimelines.isNotEmpty()) {
+                            s.entityTimelines.forEach { (urn, events) ->
+                                item {
+                                    Text(
+                                        text = "Entity: $urn",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.secondary,
+                                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                                    )
+                                }
+                                items(events) { event ->
+                                    EventCard(event = event)
+                                }
+                            }
+                        } else {
+                            items(s.primaryEvents) { event ->
+                                EventCard(event = event)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AiAnswerCard(answer: String, isGenerating: Boolean) {
+    if (answer.isNotEmpty() || isGenerating) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer
+            ),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Local SLM Synthesis",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = answer.ifEmpty { "Thinking..." },
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun EventCard(event: EventRecord) {
+    val dateStr = remember(event.timestamp) {
+        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(event.timestamp))
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = event.action,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = dateStr,
+                    fontSize = 11.sp,
+                    color = Color.Gray
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = event.rawText,
+                fontSize = 13.sp,
+                lineHeight = 18.sp
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = "Source: ${event.sourceApp}",
+                fontSize = 10.sp,
+                color = Color.DarkGray
+            )
+        }
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\presentation\MemorySearchViewModel.kt ---
+
+package com.edgememory.presentation
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.edgememory.data.model.EventRecord
+import com.edgememory.domain.retriever.CascadedRetriever
+import com.edgememory.domain.inference.OnDeviceLlmEngine
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+sealed interface SearchUiState {
+    object Idle : SearchUiState
+    object Searching : SearchUiState
+    data class Success(
+        val query: String,
+        val latencyMs: Long,
+        val primaryEvents: List<EventRecord>,
+        val entityTimelines: Map<String, List<EventRecord>>,
+        val promptContext: String
+    ) : SearchUiState
+    data class Empty(val query: String, val latencyMs: Long) : SearchUiState
+    data class Error(val message: String) : SearchUiState
+}
+
+class MemorySearchViewModel(
+    private val cascadedRetriever: CascadedRetriever,
+    private val llmEngine: OnDeviceLlmEngine
+) : ViewModel() {
+
+    private val _uiState = MutableStateFlow<SearchUiState>(SearchUiState.Idle)
+    val uiState: StateFlow<SearchUiState> = _uiState.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _streamedAnswer = MutableStateFlow("")
+    val streamedAnswer: StateFlow<String> = _streamedAnswer.asStateFlow()
+
+    private val _isGenerating = MutableStateFlow(false)
+    val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
+
+    private var searchJob: Job? = null
+
+    fun onQueryChanged(newQuery: String) {
+        _searchQuery.value = newQuery
+        searchJob?.cancel()
+
+        if (newQuery.trim().isBlank()) {
+            _uiState.value = SearchUiState.Idle
+            return
+        }
+
+        // 300ms debounce to avoid triggering on every keystroke
+        searchJob = viewModelScope.launch {
+            delay(300)
+            executeSearch(newQuery.trim())
+        }
+    }
+
+    fun executeSearch(query: String) {
+        if (query.isBlank()) return
+
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            _uiState.value = SearchUiState.Searching
+            _streamedAnswer.value = ""
+            val startTime = System.currentTimeMillis()
+
+            try {
+                // Stage-1 + Stage-2: Run FTS5 + 1-Bit ARM NEON scan
+                val result = cascadedRetriever.retrieve(query)
+                val latency = System.currentTimeMillis() - startTime
+
+                if (result.primaryEvents.isEmpty() && result.entityTimelines.isEmpty()) {
+                    _uiState.value = SearchUiState.Empty(query, latency)
+                } else {
+                    _uiState.value = SearchUiState.Success(
+                        query = query,
+                        latencyMs = latency,
+                        primaryEvents = result.primaryEvents,
+                        entityTimelines = result.entityTimelines,
+                        promptContext = result.formattedTimelinePrompt
+                    )
+                    
+                    // Stage-3: Feed retrieved timeline into On-Device SLM
+                    if (llmEngine.isReady()) {
+                        _isGenerating.value = true
+                        try {
+                            llmEngine.generateAnswerStream(
+                                systemContext = result.formattedTimelinePrompt,
+                                userQuery = query
+                            ).collect { token ->
+                                _streamedAnswer.value += token
+                            }
+                        } catch (e: Exception) {
+                            _streamedAnswer.value = "Failed to stream answer: ${e.message}"
+                        }
+                        _isGenerating.value = false
+                    } else {
+                        _streamedAnswer.value = "Model not found in files/models/. Showing raw timeline results below."
+                    }
+                }
+            } catch (e: Exception) {
+                _uiState.value = SearchUiState.Error(e.localizedMessage ?: "Unknown retrieval error")
+                _isGenerating.value = false
+            }
+        }
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\service\ingestion\IngestionSanitizer.kt ---
+
+package com.edgememory.service.ingestion
+
+import android.view.accessibility.AccessibilityNodeInfo
+import java.util.regex.Pattern
+
+object IngestionSanitizer {
+
+    // -------------------------------------------------------------
+    // 1. Strict Package Blocklist
+    // Dropped immediately at event receipt; no further checks run.
+    // -------------------------------------------------------------
+    private val BLOCKED_PACKAGES = hashSetOf(
+        // System and OEM Galleries
+        "com.google.android.apps.photos",
+        "com.sec.android.gallery3d",
+        "com.miui.gallery",
+        "com.oneplus.gallery",
+        "com.coloros.gallery",
+        "com.huawei.photos",
+        
+        // System & Third-Party Cameras
+        "com.android.camera",
+        "com.google.android.GoogleCamera",
+        "com.sec.android.app.camera",
+        
+        // Password Managers & 2FA Authenticators
+        "com.onepassword.android",
+        "com.bitwarden.mobile",
+        "com.lastpass.lpandroid",
+        "com.dashlane",
+        "com.google.android.apps.authenticator2",
+        "com.azure.authenticator",
+        "org.keepassdroid",
+        
+        // Android System UI Keyboards / Lockscreen PINs
+        "com.google.android.inputmethod.latin",
+        "com.android.systemui"
+    )
+
+    // -------------------------------------------------------------
+    // 2. Visual & Media Class Identifiers
+    // Drops nodes designed solely for image/video rendering.
+    // -------------------------------------------------------------
+    private val MEDIA_CLASS_SUBSTRINGS = listOf(
+        "ImageView",
+        "VideoView",
+        "SurfaceView",
+        "TextureView",
+        "GLSurfaceView"
+    )
+
+    // -------------------------------------------------------------
+    // 3. Compiled Pre-Compiled PII & Secret Patterns
+    // -------------------------------------------------------------
+    // Credit / Debit Cards (Visa, MasterCard, Amex, RuPay, etc.)
+    private val CREDIT_CARD_REGEX = Pattern.compile(
+        "\\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|6(?:011|5[0-9]{2})[0-9]{12}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|(?:2131|1800|35\\d{3})\\d{11})\\b"
+    )
+
+    // One-Time Passwords / Verification Codes (e.g., "OTP: 482901", "code is 123456")
+    private val OTP_REGEX = Pattern.compile(
+        "(?i)\\b(?:otp|code|verification|pin|passcode)\\s*(?:is|:|[-=])?\\s*(\\d{4,8})\\b"
+    )
+
+    // Generic Indian Aadhaar Number (12 digits, often formatted as 4-4-4)
+    private val AADHAAR_REGEX = Pattern.compile(
+        "\\b[2-9]\\d{3}[ -]\\d{4}[ -]\\d{4}\\b"
+    )
+
+    // US Social Security Number (SSN: 3-2-4)
+    private val SSN_REGEX = Pattern.compile(
+        "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+    )
+
+    // Explicit Auth Keywords / Key-Value Pairs
+    private val CREDENTIAL_KEY_VALUE_REGEX = Pattern.compile(
+        "(?i)(?:password|passwd|pwd|cvv|secret|token|api[_-]?key)\\s*[:=]\\s*[^\\s,;]+"
+    )
+
+    /**
+     * Determines whether an application package is permitted to be ingested.
+     */
+    fun isPackageAllowed(packageName: String?): Boolean {
+        if (packageName.isNullOrBlank()) return false
+        return !BLOCKED_PACKAGES.contains(packageName.trim())
+    }
+
+    /**
+     * Checks if an Accessibility Node is safe for text extraction.
+     * Rejects password inputs, secret fields, and media canvas components.
+     */
+    fun isNodeSafe(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+
+        // 1. Drop password and secure masked inputs at the OS framework level
+        if (node.isPassword) return false
+
+        // 2. Reject visual/video widgets
+        val className = node.className?.toString() ?: ""
+        for (mediaToken in MEDIA_CLASS_SUBSTRINGS) {
+            if (className.contains(mediaToken, ignoreCase = true)) {
+                return false
+            }
+        }
+
+        // 3. Drop empty or blank text containers
+        val text = node.text?.toString()
+        val contentDesc = node.contentDescription?.toString()
+        if (text.isNullOrBlank() && contentDesc.isNullOrBlank()) {
+            return false
+        }
+
+        return true
+    }
+
+    /**
+     * Cleans, normalizes, and redacts PII/secrets from raw captured text.
+     * Returns sanitized text or null if the entire payload consisted of a secret.
+     */
+    fun sanitizeText(rawInput: String?): String? {
+        if (rawInput.isNullOrBlank()) return null
+
+        var text = rawInput
+
+        // 1. Redact direct credential assignments (e.g. "password: secret123")
+        text = CREDENTIAL_KEY_VALUE_REGEX.matcher(text).replaceAll("[REDACTED_CREDENTIAL]")
+
+        // 2. Redact Card numbers
+        text = CREDIT_CARD_REGEX.matcher(text).replaceAll("[REDACTED_CARD]")
+
+        // 3. Redact National Identification numbers (Aadhaar / SSN)
+        text = AADHAAR_REGEX.matcher(text).replaceAll("[REDACTED_ID]")
+        text = SSN_REGEX.matcher(text).replaceAll("[REDACTED_ID]")
+
+        // 4. Redact OTPs and Verification codes
+        val otpMatcher = OTP_REGEX.matcher(text)
+        val sb = StringBuffer()
+        while (otpMatcher.find()) {
+            // Replace only the numeric capture group with [OTP]
+            val matchedPrefix = otpMatcher.group(0)?.substringBefore(otpMatcher.group(1) ?: "") ?: ""
+            otpMatcher.appendReplacement(sb, "$matchedPrefix[REDACTED_OTP]")
+        }
+        otpMatcher.appendTail(sb)
+        text = sb.toString()
+
+        // 5. Normalize consecutive whitespaces
+        val cleaned = text.replace(Regex("\\s+"), " ").trim()
+
+        return cleaned.ifBlank { null }
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\service\ingestion\NotificationTrackerService.kt ---
+
+package com.edgememory.service.ingestion
+
+import android.app.Notification
+import android.service.notification.NotificationListenerService
+import android.service.notification.StatusBarNotification
+import android.util.Log
+import com.edgememory.domain.retriever.EventIngestionCoordinator
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+
+class NotificationTrackerService : NotificationListenerService() {
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    companion object {
+        private const val TAG = "NotificationTracker"
+    }
+
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        if (sbn == null) return
+
+        val packageName = sbn.packageName ?: return
+
+        // 1. Package blocklist filter
+        if (!IngestionSanitizer.isPackageAllowed(packageName)) {
+            return
+        }
+
+        val notification = sbn.notification ?: return
+
+        // 2. Ignore non-content ongoing foreground notifications (e.g., active pedometer, music player)
+        if ((notification.flags and Notification.FLAG_ONGOING_EVENT) != 0) {
+            return
+        }
+
+        serviceScope.launch {
+            try {
+                val extras = notification.extras ?: return@launch
+                
+                // Extract Notification Title, Body, and Expanded BigText
+                val title = extras.getString(Notification.EXTRA_TITLE) ?: ""
+                val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+                val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString() ?: ""
+
+                val bodyContent = if (bigText.isNotBlank()) bigText else text
+                if (title.isBlank() && bodyContent.isBlank()) return@launch
+
+                val rawPayload = "[$packageName] $title: $bodyContent"
+
+                // 3. PII and OTP Redaction
+                val sanitizedPayload = IngestionSanitizer.sanitizeText(rawPayload) ?: return@launch
+
+                // 4. Send to Ingestion Coordinator
+                EventIngestionCoordinator.enqueueEvent(
+                    sourceApp = packageName,
+                    action = "NOTIFICATION",
+                    rawText = sanitizedPayload,
+                    timestamp = sbn.postTime
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to ingest notification: ${e.message}")
+            }
+        }
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        // No-op: Append-only ledger preserves history; we never remove past events
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        serviceScope.cancel()
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\service\ingestion\TextAccessibilityService.kt ---
+
+package com.edgememory.service.ingestion
+
+import android.accessibilityservice.AccessibilityService
+import android.util.Log
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import com.edgememory.domain.retriever.EventIngestionCoordinator
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import java.util.zip.CRC32
+
+class TextAccessibilityService : AccessibilityService() {
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var lastScreenHash: Long = 0L
+    private var lastEventTime: Long = 0L
+
+    companion object {
+        private const val TAG = "TextAccessibility"
+        private const val DEBOUNCE_INTERVAL_MS = 1000L // 1 second screen debounce
+        private const val MAX_CHARS_PER_SCREEN = 4000  // Truncation limit for noisy UI trees
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+
+        val packageName = event.packageName?.toString() ?: return
+        val eventType = event.eventType
+
+        // Only process Window Content Changes or State Changes
+        if (eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+            eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+        ) {
+            return
+        }
+
+        // Fast boundary check: Drop camera, gallery, banking authenticators immediately
+        if (!IngestionSanitizer.isPackageAllowed(packageName)) {
+            return
+        }
+
+        val currentTime = System.currentTimeMillis()
+        if (currentTime - lastEventTime < DEBOUNCE_INTERVAL_MS) {
+            return
+        }
+
+        // Safely extract window hierarchy root
+        val rootNode = rootInActiveWindow ?: return
+
+        serviceScope.launch {
+            try {
+                val rawCollector = StringBuilder()
+                extractTextFromNode(rootNode, rawCollector)
+
+                val rawText = rawCollector.toString().trim()
+                if (rawText.length < 15) return@launch // Skip trivial labels ("OK", "Back")
+
+                // Compute CRC32 to avoid re-embedding identical screens
+                val crc = CRC32().apply { update(rawText.toByteArray()) }
+                val currentHash = crc.value
+
+                if (currentHash == lastScreenHash) {
+                    return@launch
+                }
+                lastScreenHash = currentHash
+                lastEventTime = currentTime
+
+                // Sanitize and redact PII / credentials
+                val sanitizedText = IngestionSanitizer.sanitizeText(rawText) ?: return@launch
+                val boundedText = if (sanitizedText.length > MAX_CHARS_PER_SCREEN) {
+                    sanitizedText.take(MAX_CHARS_PER_SCREEN)
+                } else {
+                    sanitizedText
+                }
+
+                // Enqueue to 1-Bit quantization & append-only SQLite store
+                EventIngestionCoordinator.enqueueEvent(
+                    sourceApp = packageName,
+                    action = "SCREEN_TEXT",
+                    rawText = boundedText,
+                    timestamp = currentTime
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Error processing accessibility tree: ${e.message}")
+            } finally {
+                rootNode.recycle()
+            }
+        }
+    }
+
+    private fun extractTextFromNode(node: AccessibilityNodeInfo?, collector: StringBuilder) {
+        if (node == null) return
+
+        // Drop passwords, ImageView, VideoView, and empty containers
+        if (!IngestionSanitizer.isNodeSafe(node)) {
+            return
+        }
+
+        // Extract visible text or content descriptions
+        val text = node.text?.toString()
+        val desc = node.contentDescription?.toString()
+
+        if (!text.isNullOrBlank()) {
+            collector.append(text).append(" ")
+        } else if (!desc.isNullOrBlank()) {
+            collector.append(desc).append(" ")
+        }
+
+        // Traverse layout children
+        val count = node.childCount
+        for (i in 0 until count) {
+            val child = node.getChild(i)
+            if (child != null) {
+                extractTextFromNode(child, collector)
+                child.recycle()
+            }
+        }
+    }
+
+    override fun onInterrupt() {
+        Log.w(TAG, "Accessibility service interrupted by OS")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        serviceScope.cancel()
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\java\com\edgememory\service\worker\NightlyCompactionWorker.kt ---
+
+package com.edgememory.service.worker
+
+import android.content.Context
+import android.util.Log
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import com.edgememory.data.local.DatabaseManager
+import com.edgememory.domain.embedding.OnDeviceEmbedder
+import com.edgememory.domain.quantization.BitPacker
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
+import java.util.concurrent.TimeUnit
+
+class NightlyCompactionWorker(
+    appContext: Context,
+    workerParams: WorkerParameters
+) : CoroutineWorker(appContext, workerParams) {
+
+    companion object {
+        private const val TAG = "NightlyCompaction"
+        const val WORK_NAME = "edge_memory_nightly_compaction"
+
+        /**
+         * Schedules the worker to run periodically once per day,
+         * exclusively when the phone is charging and idle.
+         */
+        fun schedule(context: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiresCharging(true)
+                .setRequiresDeviceIdle(true)
+                .build()
+
+            val dailyWorkRequest = PeriodicWorkRequestBuilder<NightlyCompactionWorker>(
+                repeatInterval = 24,
+                repeatIntervalTimeUnit = TimeUnit.HOURS,
+                flexTimeInterval = 2,
+                flexTimeIntervalUnit = TimeUnit.HOURS
+            )
+                .setConstraints(constraints)
+                .build()
+
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                WORK_NAME,
+                ExistingPeriodicWorkPolicy.KEEP,
+                dailyWorkRequest
+            )
+        }
+    }
+
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        Log.i(TAG, "Starting nightly compaction job under idle/charging constraints.")
+
+        val dbManager = DatabaseManager.getInstance(applicationContext)
+        val db = dbManager.getWritableDatabase()
+        val embedder = OnDeviceEmbedder(applicationContext)
+
+        try {
+            embedder.initialize()
+
+            // 1. Calculate boundaries for the previous calendar day
+            val calendar = Calendar.getInstance().apply {
+                add(Calendar.DAY_OF_YEAR, -1)
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            val startOfDay = calendar.timeInMillis
+            val dateKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(calendar.time)
+
+            calendar.set(Calendar.HOUR_OF_DAY, 23)
+            calendar.set(Calendar.MINUTE, 59)
+            calendar.set(Calendar.SECOND, 59)
+            calendar.set(Calendar.MILLISECOND, 999)
+            val endOfDay = calendar.timeInMillis
+
+            // 2. Check if day is already compacted
+            var alreadyCompacted = false
+            db.rawQuery("SELECT 1 FROM daily_summaries WHERE day_date = ?", arrayOf(dateKey)).use { cursor ->
+                if (cursor.moveToFirst()) alreadyCompacted = true
+            }
+
+            if (alreadyCompacted) {
+                Log.i(TAG, "Day $dateKey is already compacted. Skipping summary extraction.")
+                return@withContext Result.success()
+            }
+
+            // 3. Extract raw events for that 24-hour window
+            val rawEvents = mutableListOf<String>()
+            val fetchQuery = """
+                SELECT timestamp, action, source_app, raw_text 
+                FROM event_log 
+                WHERE timestamp BETWEEN ? AND ? 
+                ORDER BY timestamp ASC;
+            """.trimIndent()
+
+            db.rawQuery(fetchQuery, arrayOf(startOfDay.toString(), endOfDay.toString())).use { cursor ->
+                val timeCol = cursor.getColumnIndexOrThrow("timestamp")
+                val actionCol = cursor.getColumnIndexOrThrow("action")
+                val appCol = cursor.getColumnIndexOrThrow("source_app")
+                val textCol = cursor.getColumnIndexOrThrow("raw_text")
+
+                val timeFmt = SimpleDateFormat("HH:mm", Locale.US)
+                while (cursor.moveToNext()) {
+                    val timeStr = timeFmt.format(cursor.getLong(timeCol))
+                    val action = cursor.getString(actionCol)
+                    val app = cursor.getString(appCol)
+                    val text = cursor.getString(textCol)
+                    rawEvents.add("[$timeStr] ($app) $action: $text")
+                }
+            }
+
+            if (rawEvents.isEmpty()) {
+                Log.i(TAG, "No activity logged for $dateKey. Inserting empty marker.")
+                insertDailySummary(db, dateKey, "No notable activity.", ByteArray(64))
+                return@withContext Result.success()
+            }
+
+            // 4. Compact into structured micro-facts
+            val compactedTriplets = extractMicroFacts(rawEvents)
+
+            // 5. Generate 1-bit binary embedding of the daily digest
+            val floatEmbedding = embedder.embed(compactedTriplets)
+            val binaryBlob = BitPacker.pack(floatEmbedding)
+
+            // 6. Write to daily_summaries L1 index
+            insertDailySummary(db, dateKey, compactedTriplets, binaryBlob)
+            Log.i(TAG, "Successfully compacted $dateKey (${rawEvents.size} events -> ${compactedTriplets.length} chars).")
+
+            // 7. Reclaim SQLite WAL storage
+            db.execSQL("PRAGMA wal_checkpoint(TRUNCATE);")
+
+            Result.success()
+        } catch (e: Exception) {
+            Log.e(TAG, "Compaction failed: ${e.message}", e)
+            Result.retry()
+        } finally {
+            embedder.close()
+        }
+    }
+
+    /**
+     * Synthesizes chronological raw events into structured micro-fact triplets.
+     * When an on-device SLM runtime (e.g. llama.cpp) is bound, prompt it with this template.
+     */
+    private fun extractMicroFacts(events: List<String>): String {
+        val eventContext = events.joinToString("\n")
+
+        // Structured prompt template for local SLM compaction
+        val prompt = """
+            Extract structured facts from the raw logs below.
+            Format as compact triplets: [DATE_TIME | ACTION | DETAILS]
+            Focus exclusively on bookings, transactions, key communications, and updates.
+            Omit repetitive UI noise.
+            
+            RAW LOGS:
+            $eventContext
+            
+            MICRO-FACT TRIPLETS:
+        """.trimIndent()
+
+        // Fallback rule-based compactor if SLM is not active in background
+        return ruleBasedCompactor(events)
+    }
+
+    private fun ruleBasedCompactor(events: List<String>): String {
+        val keywords = listOf("book", "ticket", "order", "paid", "flight", "train", "cancel", "meet", "reschedul")
+        val significant = events.filter { event ->
+            keywords.any { kw -> event.contains(kw, ignoreCase = true) }
+        }
+
+        return if (significant.isNotEmpty()) {
+            significant.take(15).joinToString(" | ")
+        } else {
+            events.take(5).joinToString(" | ")
+        }
+    }
+
+    private fun insertDailySummary(
+        db: net.sqlcipher.database.SQLiteDatabase,
+        dateKey: String,
+        summaryText: String,
+        binaryBlob: ByteArray
+    ) {
+        val sql = """
+            INSERT OR REPLACE INTO daily_summaries (day_date, summary_text, summary_embedding)
+            VALUES (?, ?, ?);
+        """.trimIndent()
+
+        val stmt = db.compileStatement(sql)
+        stmt.bindString(1, dateKey)
+        stmt.bindString(2, summaryText)
+        stmt.bindBlob(3, binaryBlob)
+        stmt.executeInsert()
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\res\values\strings.xml ---
+
+<resources>
+    <string name="app_name">Edge Memory Engine</string>
+    <string name="accessibility_service_label">Edge Memory Harvester</string>
+    <string name="accessibility_service_description">Analyzes screen text locally using 1-bit binary embeddings to provide instant context retrieval without cloud data transfer.</string>
+    <string name="notification_service_label">Edge Notification Watcher</string>
+</resources>
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\res\values\themes.xml ---
+
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.EdgeMemoryEngine" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\app\src\main\res\xml\accessibility_service_config.xml ---
+
+<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/accessibility_service_description"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="200"
+    android:settingsActivity="com.edgememory.presentation.MainActivity" />
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\Podfile ---
+
+platform :ios, '15.0'
+use_frameworks!
+
+target 'EdgeMemoryEngine' do
+  pod 'SQLCipher', :subspecs => ['fts5']
+end
+
+target 'EdgeMemoryShareExtension' do
+  pod 'SQLCipher', :subspecs => ['fts5']
+end
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\EdgeMemoryEngine\AppGroupContainer.swift ---
+
+// Shared Database Container Resolver
+import Foundation
+
+struct AppGroupContainer {
+    static let groupIdentifier = "group.com.edgememory.shared"
+    
+    static var databaseURL: URL {
+        guard let containerURL = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: groupIdentifier
+        ) else {
+            fatalError("Failed to resolve shared App Group directory.")
+        }
+        return containerURL.appendingPathComponent("edge_memory_encrypted.db")
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\EdgeMemoryEngine\BackgroundCompactionManager.swift ---
+
+import BackgroundTasks
+
+class BackgroundCompactionManager {
+    static let taskIdentifier = "com.edgememory.nightlycompaction"
+
+    static func register() {
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: taskIdentifier, using: nil) { task in
+            guard let processingTask = task as? BGProcessingTask else { return }
+            handleNightlyCompaction(task: processingTask)
+        }
+    }
+
+    static func scheduleNextRun() {
+        let request = BGProcessingTaskRequest(identifier: taskIdentifier)
+        request.requiresCharging = true
+        request.requiresNetworkConnectivity = false
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 24 * 3600)
+
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            print("Failed to schedule background task: \\(error)")
+        }
+    }
+
+    private static func handleNightlyCompaction(task: BGProcessingTask) {
+        scheduleNextRun()
+
+        task.expirationHandler = {
+            // Cancel any long-running transactions if iOS revokes background time
+        }
+
+        Task {
+            await DatabaseManager.shared.runNightlyWALCheckpoint()
+            task.setTaskCompleted(success: true)
+        }
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\EdgeMemoryEngine\BitPacker.swift ---
+
+import Foundation
+
+struct BitPacker {
+    static func pack(embeddings: [Float]) -> Data {
+        precondition(embeddings.count == 512, "Must be exactly 512 dimensions")
+        var result = [UInt8](repeating: 0, count: 64)
+        
+        for byteIndex in 0..<64 {
+            var currentByte: UInt8 = 0
+            let offset = byteIndex * 8
+            for bitIndex in 0..<8 {
+                if embeddings[offset + bitIndex] > 0.0 {
+                    currentByte |= (1 << (7 - bitIndex))
+                }
+            }
+            result[byteIndex] = currentByte
+        }
+        return Data(result)
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\EdgeMemoryEngine\CascadedRetriever.swift ---
+
+import Foundation
+
+final class CascadedRetriever {
+    private let db = DatabaseManager.shared
+    private let embedder = EmbeddingManager.shared
+    private let rrfK: Double = 60.0
+    
+    func retrieve(query: String) async -> [RetrievedHit] {
+        // 1. Encode query and pack into 64-byte 1-bit vector
+        let queryFloats = embedder.embed(text: query)
+        let queryBlob = BitPacker.pack(embeddings: queryFloats)
+        
+        // 2. Parallel fan-out
+        async let ftsResults = db.searchFts(query: query, limit: 50)
+        async let binaryResults = runBinaryScan(queryBlob: queryBlob)
+        
+        let (ftsHits, binHits) = await (ftsResults, binaryResults)
+        
+        // 3. Reciprocal Rank Fusion
+        var scores: [Int64: Double] = [:]
+        var urnMap: [Int64: String] = [:]
+        var textMap: [Int64: String] = [:]
+        
+        for (rank, hit) in ftsHits.enumerated() {
+            let score = 1.0 / (rrfK + Double(rank + 1))
+            scores[hit.eventId, default: 0.0] += score
+            urnMap[hit.eventId] = hit.urn
+            textMap[hit.eventId] = hit.text
+        }
+        
+        for (rank, hit) in binHits.enumerated() {
+            let score = 1.0 / (rrfK + Double(rank + 1))
+            scores[hit.eventId, default: 0.0] += score
+            urnMap[hit.eventId] = hit.urn
+            textMap[hit.eventId] = hit.text
+        }
+        
+        let topIds = Array(scores.keys.prefix(50))
+        let inflatedTexts = db.getEventsByIds(eventIds: topIds)
+
+        return scores.map { (id, score) in
+            RetrievedHit(
+                eventId: id,
+                urn: urnMap[id] ?? "unknown",
+                text: inflatedTexts[id] ?? textMap[id] ?? "",
+                score: score
+            )
+        }
+        .sorted { $0.score > $1.score }
+    }
+    
+    private func runBinaryScan(queryBlob: Data) -> [(eventId: Int64, urn: String, text: String)] {
+        guard queryBlob.count >= 64 else { return [] }
+        let candidates = db.loadBinaryCandidates().filter { $0.blob.count >= 64 }
+        guard !candidates.isEmpty else { return [] }
+        
+        let count = candidates.count
+        var distances = [Int32](repeating: 0, count: count)
+        
+        // Flatten candidate blobs into contiguous 64-byte memory
+        var flatMatrix = Data(capacity: count * 64)
+        for c in candidates {
+            flatMatrix.append(c.blob.prefix(64))
+        }
+        
+        // Call native ARM NEON SIMD C++ bridge
+        queryBlob.withUnsafeBytes { qPtr in
+            flatMatrix.withUnsafeBytes { mPtr in
+                distances.withUnsafeMutableBufferPointer { dPtr in
+                    if let qAddress = qPtr.bindMemory(to: UInt8.self).baseAddress,
+                       let mAddress = mPtr.bindMemory(to: UInt8.self).baseAddress,
+                       let dAddress = dPtr.baseAddress {
+                        batch_compute_distances_simd(qAddress, mAddress, Int32(count), dAddress)
+                    }
+                }
+            }
+        }
+        
+        // Sort ascending by Hamming distance
+        let scored = candidates.enumerated().map { (idx, c) in
+            (eventId: c.eventId, urn: c.urn, text: "", distance: distances[idx])
+        }
+        .sorted { $0.distance < $1.distance }
+        .prefix(50)
+        
+        return scored.map { ($0.eventId, $0.urn, $0.text) }
+    }
+}
+
+struct RetrievedHit {
+    let eventId: Int64
+    let urn: String
+    let text: String
+    let score: Double
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\EdgeMemoryEngine\DatabaseManager.swift ---
+
+import Foundation
+import SQLite3
+import Security
+
+final class DatabaseManager {
+    static let shared = DatabaseManager()
+    
+    private var db: OpaquePointer?
+    private let queue = DispatchQueue(label: "com.edgememory.dbqueue", qos: .userInitiated)
+    
+    private init() {
+        openEncryptedDatabase()
+    }
+    
+    private func openEncryptedDatabase() {
+        let dbURL = AppGroupContainer.databaseURL
+        let passphrase = KeychainHelper.getOrCreateDatabasePassphrase()
+        
+        if sqlite3_open(dbURL.path, &db) == SQLITE_OK {
+            // Apply SQLCipher encryption key
+            sqlite3_key(db, passphrase, Int32(passphrase.count))
+            
+            // Set WAL journal mode and foreign keys
+            executeRaw(sql: "PRAGMA journal_mode = WAL;")
+            executeRaw(sql: "PRAGMA synchronous = NORMAL;")
+            executeRaw(sql: "PRAGMA foreign_keys = ON;")
+            
+            createSchemaIfNeeded()
+        } else {
+            fatalError("Failed to open SQLite database at \(dbURL.path)")
+        }
+    }
+    
+    private func createSchemaIfNeeded() {
+        let schemaSQL = """
+        CREATE TABLE IF NOT EXISTS event_log (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_urn TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            source_app TEXT NOT NULL,
+            raw_text TEXT NOT NULL,
+            binary_embedding BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_entity_time ON event_log(entity_urn, timestamp ASC);
+        CREATE INDEX IF NOT EXISTS idx_time ON event_log(timestamp DESC);
+        CREATE VIRTUAL TABLE IF NOT EXISTS event_fts USING fts5(
+            raw_text,
+            content='event_log',
+            content_rowid='event_id',
+            tokenize='porter unicode61'
+        );
+        CREATE TRIGGER IF NOT EXISTS trg_event_ai AFTER INSERT ON event_log BEGIN
+            INSERT INTO event_fts(rowid, raw_text) VALUES (new.event_id, new.raw_text);
+        END;
+        CREATE TABLE IF NOT EXISTS daily_summaries (
+            day_date TEXT PRIMARY KEY,
+            summary_text TEXT NOT NULL,
+            summary_embedding BLOB NOT NULL
+        );
+        """
+        executeRaw(sql: schemaSQL)
+    }
+    
+    private func executeRaw(sql: String) {
+        var errMsg: UnsafeMutablePointer<CChar>?
+        if sqlite3_exec(db, sql, nil, nil, &errMsg) != SQLITE_OK {
+            if let err = errMsg {
+                print("SQLite Exec Error: \(String(cString: err))")
+                sqlite3_free(errMsg)
+            }
+        }
+    }
+    
+    func insertEvent(entityUrn: String, action: String = "SHARE_INPUT", sourceApp: String = "ShareExtension", rawText: String, binaryEmbedding: Data) {
+        queue.sync {
+            executeRaw(sql: "BEGIN IMMEDIATE TRANSACTION;")
+            
+            let sql = "INSERT INTO event_log (entity_urn, timestamp, action, source_app, raw_text, binary_embedding) VALUES (?, ?, ?, ?, ?, ?);"
+            var statement: OpaquePointer?
+            
+            if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+                let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+                
+                sqlite3_bind_text(statement, 1, (entityUrn as NSString).utf8String, -1, nil)
+                sqlite3_bind_int64(statement, 2, timestamp)
+                sqlite3_bind_text(statement, 3, (action as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 4, (sourceApp as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 5, (rawText as NSString).utf8String, -1, nil)
+                
+                binaryEmbedding.withUnsafeBytes { rawBufferPointer in
+                    sqlite3_bind_blob(statement, 6, rawBufferPointer.baseAddress, Int32(binaryEmbedding.count), nil)
+                }
+                
+                if sqlite3_step(statement) == SQLITE_DONE {
+                    executeRaw(sql: "COMMIT TRANSACTION;")
+                } else {
+                    executeRaw(sql: "ROLLBACK TRANSACTION;")
+                }
+            } else {
+                executeRaw(sql: "ROLLBACK TRANSACTION;")
+            }
+            sqlite3_finalize(statement)
+        }
+    }
+    
+    func getEventsByIds(eventIds: [Int64]) -> [Int64: String] {
+        guard !eventIds.isEmpty else { return [:] }
+        return queue.sync {
+            var map: [Int64: String] = [:]
+            let placeholders = eventIds.map { _ in "?" }.joined(separator: ",")
+            let sql = "SELECT event_id, raw_text FROM event_log WHERE event_id IN (\(placeholders));"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                for (idx, id) in eventIds.enumerated() {
+                    sqlite3_bind_int64(stmt, Int32(idx + 1), id)
+                }
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let id = sqlite3_column_int64(stmt, 0)
+                    let text = String(cString: sqlite3_column_text(stmt, 1))
+                    map[id] = text
+                }
+            }
+            sqlite3_finalize(stmt)
+            return map
+        }
+    }
+    
+    func runNightlyWALCheckpoint() async {
+        queue.async {
+            self.executeRaw(sql: "PRAGMA wal_checkpoint(TRUNCATE);")
+        }
+    }
+    
+    func searchFts(query: String, limit: Int = 50) -> [(eventId: Int64, urn: String, text: String, rank: Double)] {
+        queue.sync {
+            var results: [(eventId: Int64, urn: String, text: String, rank: Double)] = []
+            let sql = """
+            SELECT e.event_id, e.entity_urn, e.raw_text, fts.rank 
+            FROM event_fts fts
+            JOIN event_log e ON fts.rowid = e.event_id
+            WHERE event_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?;
+            """
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                let sanitized = query.replacingOccurrences(of: "\"", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let pattern = "\(sanitized)*"
+                sqlite3_bind_text(stmt, 1, (pattern as NSString).utf8String, -1, nil)
+                sqlite3_bind_int(stmt, 2, Int32(limit))
+                
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let id = sqlite3_column_int64(stmt, 0)
+                    let urn = String(cString: sqlite3_column_text(stmt, 1))
+                    let text = String(cString: sqlite3_column_text(stmt, 2))
+                    let rank = sqlite3_column_double(stmt, 3)
+                    results.append((id, urn, text, rank))
+                }
+            }
+            sqlite3_finalize(stmt)
+            return results
+        }
+    }
+    
+    func loadBinaryCandidates() -> [(eventId: Int64, urn: String, blob: Data)] {
+        queue.sync {
+            var candidates: [(eventId: Int64, urn: String, blob: Data)] = []
+            let sql = "SELECT event_id, entity_urn, binary_embedding FROM event_log ORDER BY timestamp DESC;"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let id = sqlite3_column_int64(stmt, 0)
+                    let urn = String(cString: sqlite3_column_text(stmt, 1))
+                    if let blobPtr = sqlite3_column_blob(stmt, 2) {
+                        let bytes = sqlite3_column_bytes(stmt, 2)
+                        let data = Data(bytes: blobPtr, count: Int(bytes))
+                        candidates.append((id, urn, data))
+                    }
+                }
+            }
+            sqlite3_finalize(stmt)
+            return candidates
+        }
+    }
+}
+
+// Hardware-backed Keychain envelope for the SQLCipher passphrase
+struct KeychainHelper {
+    private static let tag = "com.edgememory.db_passphrase"
+    private static let accessGroup = "group.com.edgememory.shared" // Matches your App Group
+    
+    static func getOrCreateDatabasePassphrase() -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: tag,
+            kSecAttrAccessGroup as String: accessGroup,
+            kSecReturnData as String: true
+        ]
+        
+        var item: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+           let data = item as? Data,
+           let pass = String(data: data, encoding: .utf8) {
+            return pass
+        }
+        
+        // Generate 64 cryptographically secure random bytes
+        var randomBytes = [UInt8](repeating: 0, count: 64)
+        _ = SecRandomCopyBytes(kSecRandomDefault, 64, &randomBytes)
+        let newPass = Data(randomBytes).base64EncodedString()
+        
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: tag,
+            kSecAttrAccessGroup as String: accessGroup,
+            kSecValueData as String: newPass.data(using: .utf8)!,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        SecItemAdd(addQuery as CFDictionary, nil)
+        return newPass
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\EdgeMemoryEngine\EmbeddingManager.swift ---
+
+import Foundation
+import CoreML
+
+final class EmbeddingManager {
+    static let shared = EmbeddingManager()
+    
+    private var model: BgeSmallEmbedding?
+    private let tokenizer = WordPieceTokenizer()
+    
+    private init() {
+        let config = MLModelConfiguration()
+        config.computeUnits = .all
+        if let primaryModel = try? BgeSmallEmbedding(configuration: config) {
+            self.model = primaryModel
+        } else {
+            // Fallback to CPU + GPU if ANE compilation is refused in extension sandbox
+            config.computeUnits = .cpuAndGPU
+            self.model = try? BgeSmallEmbedding(configuration: config)
+        }
+    }
+    
+    func embed(text: String) -> [Float] {
+        guard let model = model else { return [Float](repeating: 0.0, count: 512) }
+        
+        let tokenIds = tokenizer.tokenize(text: text, maxSeqLength: 128)
+        
+        do {
+            let inputMLArray = try MLMultiArray(shape: [1, 128], dataType: .int32)
+            for (idx, token) in tokenIds.enumerated() {
+                inputMLArray[[0, idx as NSNumber]] = NSNumber(value: token)
+            }
+            
+            let output = try model.prediction(input_ids: inputMLArray)
+            return meanPoolAndNormalize(outputMultiArray: output.var_last_hidden_state)
+        } catch {
+            print("CoreML inference error: \(error)")
+            return [Float](repeating: 0.0, count: 512)
+        }
+    }
+    
+    private func meanPoolAndNormalize(outputMultiArray: MLMultiArray) -> [Float] {
+        var pooled = [Float](repeating: 0.0, count: 512)
+        let seqLen = 128
+        
+        for s in 0..<seqLen {
+            for d in 0..<512 {
+                let val = outputMultiArray[[0, s as NSNumber, d as NSNumber]].floatValue
+                pooled[d] += val
+            }
+        }
+        
+        // Mean pooling
+        for d in 0..<512 { pooled[d] /= Float(seqLen) }
+        
+        // L2 Unit Normalization
+        let norm = sqrt(pooled.reduce(0.0) { $0 + ($1 * $1) })
+        if norm > 0.0 {
+            for d in 0..<512 { pooled[d] /= norm }
+        }
+        return pooled
+    }
+}
+
+// Lightweight WordPiece Tokenizer loader for iOS
+final class WordPieceTokenizer {
+    private var vocab: [String: Int32] = [:]
+    
+    init() {
+        if let path = Bundle.main.path(forResource: "vocab", ofType: "txt"),
+           let content = try? String(contentsOfFile: path, encoding: .utf8) {
+            var index: Int32 = 0
+            content.enumerateLines { line, _ in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    self.vocab[trimmed] = index
+                    index += 1
+                }
+            }
+        }
+    }
+    
+    func tokenize(text: String, maxSeqLength: Int) -> [Int32] {
+        let clsId: Int32 = vocab["[CLS]"] ?? 101
+        let sepId: Int32 = vocab["[SEP]"] ?? 102
+        let unkId: Int32 = vocab["[UNK]"] ?? 100
+        let padId: Int32 = vocab["[PAD]"] ?? 0
+        
+        var tokens: [Int32] = [clsId]
+        let words = text.lowercased().components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+        
+        for word in words {
+            if tokens.count >= maxSeqLength - 1 { break }
+            tokens.append(vocab[word] ?? unkId)
+        }
+        tokens.append(sepId)
+        
+        while tokens.count < maxSeqLength {
+            tokens.append(padId)
+        }
+        return Array(tokens.prefix(maxSeqLength))
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\EdgeMemoryEngine\HammingBridge.cpp ---
+
+#include "HammingBridge.hpp"
+#include <arm_neon.h>
+
+extern "C" int compute_hamming_distance_simd(const uint8_t* q, const uint8_t* t) {
+    int distance = 0;
+    for (int i = 0; i < 64; i += 16) {
+        uint8x16_t vec_q = vld1q_u8(q + i);
+        uint8x16_t vec_t = vld1q_u8(t + i);
+        
+        uint8x16_t vec_xor = veorq_u8(vec_q, vec_t);
+        uint8x16_t vec_cnt = vcntq_u8(vec_xor);
+        
+        uint16x8_t sum1 = vpaddlq_u8(vec_cnt);
+        uint32x4_t sum2 = vpaddlq_u16(sum1);
+        distance += (vgetq_lane_u32(sum2, 0) + vgetq_lane_u32(sum2, 1) + 
+                     vgetq_lane_u32(sum2, 2) + vgetq_lane_u32(sum2, 3));
+    }
+    return distance;
+}
+
+extern "C" void batch_compute_distances_simd(const uint8_t* query, 
+                                            const uint8_t* candidate_matrix, 
+                                            int count, 
+                                            int32_t* out_distances) {
+    for (int i = 0; i < count; i++) {
+        out_distances[i] = compute_hamming_distance_simd(query, candidate_matrix + (i * 64));
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\EdgeMemoryEngine\HammingBridge.hpp ---
+
+#ifndef HammingBridge_hpp
+#define HammingBridge_hpp
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int compute_hamming_distance_simd(const uint8_t* q, const uint8_t* t);
+void batch_compute_distances_simd(const uint8_t* query, 
+                                  const uint8_t* candidate_matrix, 
+                                  int count, 
+                                  int32_t* out_distances);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\EdgeMemoryEngine\IngestionSanitizer.swift ---
+
+import Foundation
+
+struct IngestionSanitizer {
+    
+    // Pre-compiled regex patterns
+    private static let creditCardRegex = try! NSRegularExpression(
+        pattern: "\\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|6(?:011|5[0-9]{2})[0-9]{12}|3[47][0-9]{13})\\b"
+    )
+    
+    private static let otpRegex = try! NSRegularExpression(
+        pattern: "(?i)\\b(?:otp|code|verification|pin|passcode)\\s*(?:is|:|[-=])?\\s*(\\d{4,8})\\b"
+    )
+    
+    // Strict spacing/separator constraints to avoid clobbering Unix timestamps
+    private static let nationalIdRegex = try! NSRegularExpression(
+        pattern: "\\b[2-9]\\d{3}[ -]\\d{4}[ -]\\d{4}\\b|\\b\\d{3}-\\d{2}-\\d{4}\\b"
+    )
+    
+    private static let credentialsRegex = try! NSRegularExpression(
+        pattern: "(?i)(?:password|passwd|pwd|cvv|secret|token|api[_-]?key)\\s*[:=]\\s*[^\\s,;]+"
+    )
+
+    static func sanitize(text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        
+        var current = trimmed
+        let fullRange = { NSRange(location: 0, length: current.utf16.count) }
+        
+        current = credentialsRegex.stringByReplacingMatches(in: current, range: fullRange(), withTemplate: "[REDACTED_CREDENTIAL]")
+        current = creditCardRegex.stringByReplacingMatches(in: current, range: fullRange(), withTemplate: "[REDACTED_CARD]")
+        current = nationalIdRegex.stringByReplacingMatches(in: current, range: fullRange(), withTemplate: "[REDACTED_ID]")
+        current = otpRegex.stringByReplacingMatches(in: current, range: fullRange(), withTemplate: "[REDACTED_OTP]")
+        
+        // Collapse whitespace
+        let cleaned = current.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            
+        return cleaned.isEmpty ? nil : cleaned
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\EdgeMemoryEngine\MemorySearchContentView.swift ---
+
+import SwiftUI
+
+struct MemorySearchContentView: View {
+    @State private var query = ""
+    @State private var hits: [RetrievedHit] = []
+    @State private var latencyMs: Int = 0
+    @State private var isSearching = false
+    
+    private let retriever = CascadedRetriever()
+    
+    var body: some View {
+        NavigationStack {
+            VStack {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.gray)
+                    TextField("Search memory (e.g., ticket, meeting, order)", text: $query)
+                        .textFieldStyle(.plain)
+                        .onSubmit { performSearch() }
+                    if !query.isEmpty {
+                        Button(action: { query = ""; hits = [] }) {
+                            Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
+                        }
+                    }
+                }
+                .padding(12)
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(10)
+                .padding(.horizontal)
+                
+                if latencyMs > 0 {
+                    HStack {
+                        Text("Retrieved in \(latencyMs) ms")
+                            .font(.caption)
+                            .foregroundColor(.accentColor)
+                            .fontWeight(.semibold)
+                        Spacer()
+                    }
+                    .padding(.horizontal)
+                    .padding(.top, 4)
+                }
+                
+                if isSearching {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                } else {
+                    List(hits, id: \.eventId) { hit in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(hit.urn)
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text(String(format: "Score: %.3f", hit.score))
+                                    .font(.caption2)
+                                    .foregroundColor(.gray)
+                            }
+                            Text(hit.text)
+                                .font(.body)
+                                .lineLimit(3)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .navigationTitle("Edge Memory Engine")
+        }
+    }
+    
+    private func performSearch() {
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        isSearching = true
+        let start = DispatchTime.now()
+        
+        Task {
+            let results = await retriever.retrieve(query: query)
+            let end = DispatchTime.now()
+            let nanoTime = end.uptimeNanoseconds - start.uptimeNanoseconds
+            
+            await MainActor.run {
+                self.hits = results
+                self.latencyMs = Int(nanoTime / 1_000_000)
+                self.isSearching = false
+            }
+        }
+    }
+}
+
+--- C:\Users\Asus\Desktop\edge-memory-engine\ios\EdgeMemoryShareExtension\ShareViewController.swift ---
+
+import UIKit
+import Social
+import UniformTypeIdentifiers
+
+class ShareViewController: SLComposeServiceViewController {
+
+    override func isContentValid() -> Bool {
+        return !contentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    override func didSelectPost() {
+        guard let item = extensionContext?.inputItems.first as? NSExtensionItem,
+              let provider = item.attachments?.first else {
+            self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
+            return
+        }
+
+        if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+            provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { [weak self] (textData, error) in
+                if let rawText = textData as? String {
+                    self?.processAndStore(text: rawText)
+                }
+                self?.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
+            }
+        } else {
+            self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
+        }
+    }
+
+    private func processAndStore(text: String) {
+        // 1. Sanitize text (Redact credentials, cards, IDs)
+        guard let sanitized = IngestionSanitizer.sanitize(text: text) else { return }
+
+        // 2. Generate 512 floats via CoreML model or on-device NLEmbedding
+        let floatVector = EmbeddingManager.shared.embed(text: sanitized)
+
+        // 3. 1-bit pack
+        let binaryBlob = BitPacker.pack(embeddings: floatVector)
+
+        // 4. Insert into shared SQLCipher database in group container
+        DatabaseManager.shared.insertEvent(
+            entityUrn: "urn:ios:share_extension",
+            rawText: sanitized,
+            binaryEmbedding: binaryBlob
+        )
+    }
+}

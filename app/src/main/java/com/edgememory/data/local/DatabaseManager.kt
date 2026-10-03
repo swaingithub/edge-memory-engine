@@ -25,20 +25,14 @@ class DatabaseManager private constructor(private val context: Context) {
         // 2. Resolve or generate hardware-backed database passphrase
         val passphrase = KeyStoreHelper.getOrCreateDatabasePassphrase(context)
 
-        // 3. Initialize OpenHelper with WAL and SQLite configuration
+        // 3. Initialize OpenHelper
         dbHelper = EncryptedOpenHelper(context, passphrase)
     }
 
-    /**
-     * Provides an active thread-safe read/write SQLCipher database connection.
-     */
     fun getWritableDatabase(): SQLiteDatabase {
         return dbHelper.writableDatabase
     }
 
-    /**
-     * Provides an active thread-safe read-only SQLCipher database connection.
-     */
     fun getReadableDatabase(): SQLiteDatabase {
         return dbHelper.readableDatabase
     }
@@ -57,13 +51,10 @@ class DatabaseManager private constructor(private val context: Context) {
         }
     }
 
-    /**
-     * Internal SQLiteOpenHelper implementation targeting SQLCipher.
-     */
     private class EncryptedOpenHelper(
-        private val appContext: Context,
+        context: Context,
         private val passphraseChars: CharArray
-    ) : SQLiteOpenHelper(appContext, DB_NAME, null, DB_VERSION) {
+    ) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
 
         val writableDatabase: SQLiteDatabase
             get() = getWritableDatabase(passphraseChars)
@@ -73,7 +64,6 @@ class DatabaseManager private constructor(private val context: Context) {
 
         override fun onConfigure(db: SQLiteDatabase) {
             super.onConfigure(db)
-            // Enable Write-Ahead Logging for non-blocking concurrent reads and writes
             db.enableWriteAheadLogging()
             db.execSQL("PRAGMA foreign_keys = ON;")
             db.execSQL("PRAGMA synchronous = NORMAL;")
@@ -82,16 +72,48 @@ class DatabaseManager private constructor(private val context: Context) {
         override fun onCreate(db: SQLiteDatabase) {
             db.beginTransaction()
             try {
-                // Read and execute initial DDL schema from assets/schema.sql
-                val schemaDdl = appContext.assets.open("schema.sql").bufferedReader().use { it.readText() }
-                
-                // Split multi-statement DDL by semicolon
-                schemaDdl.split(";")
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() }
-                    .forEach { sqlStatement ->
-                        db.execSQL(sqlStatement)
-                    }
+                // 1. Event Log table
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS event_log (
+                        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        entity_urn TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        action TEXT NOT NULL,
+                        source_app TEXT NOT NULL,
+                        raw_text TEXT NOT NULL,
+                        binary_embedding BLOB NOT NULL
+                    )
+                """.trimIndent())
+
+                // 2. Indices
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_entity_time ON event_log(entity_urn, timestamp ASC)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_time ON event_log(timestamp DESC)")
+
+                // 3. FTS5 Virtual Table
+                db.execSQL("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS event_fts USING fts5(
+                        raw_text,
+                        content='event_log',
+                        content_rowid='event_id',
+                        tokenize='porter unicode61'
+                    )
+                """.trimIndent())
+
+                // 4. Synchronization Trigger (Keeps complete BEGIN ... END intact)
+                db.execSQL("""
+                    CREATE TRIGGER IF NOT EXISTS trg_event_ai AFTER INSERT ON event_log BEGIN
+                        INSERT INTO event_fts(rowid, raw_text) VALUES (new.event_id, new.raw_text);
+                    END
+                """.trimIndent())
+
+                // 5. Daily Summaries Table
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS daily_summaries (
+                        day_date TEXT PRIMARY KEY,
+                        summary_text TEXT NOT NULL,
+                        summary_embedding BLOB NOT NULL
+                    )
+                """.trimIndent())
 
                 db.setTransactionSuccessful()
             } finally {
@@ -100,13 +122,10 @@ class DatabaseManager private constructor(private val context: Context) {
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            // Append-only invariant: Schema migrations strictly append new columns or indices
+            // Append-only invariant
         }
     }
 
-    /**
-     * Manages hardware-backed KeyStore envelope encryption for the database passphrase.
-     */
     private object KeyStoreHelper {
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val MASTER_KEY_ALIAS = "edge_memory_master_key"
@@ -124,7 +143,6 @@ class DatabaseManager private constructor(private val context: Context) {
             val masterKey = getOrCreateMasterKey()
 
             return if (encPassphraseBase64 != null && ivBase64 != null) {
-                // Decrypt existing stored passphrase using hardware TEE key
                 val cipher = Cipher.getInstance(AES_GCM_NO_PADDING)
                 val iv = Base64.decode(ivBase64, Base64.NO_WRAP)
                 val spec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
@@ -134,10 +152,9 @@ class DatabaseManager private constructor(private val context: Context) {
                 val rawPassphraseBytes = cipher.doFinal(encryptedBytes)
 
                 val chars = String(rawPassphraseBytes, Charsets.UTF_8).toCharArray()
-                rawPassphraseBytes.fill(0) // Clean sensitive bytes from memory
+                rawPassphraseBytes.fill(0)
                 chars
             } else {
-                // Generate a fresh cryptographically secure 64-byte passphrase
                 val rawPassphraseBytes = ByteArray(64)
                 SecureRandom().nextBytes(rawPassphraseBytes)
 
@@ -146,14 +163,13 @@ class DatabaseManager private constructor(private val context: Context) {
                 val iv = cipher.iv
                 val encryptedBytes = cipher.doFinal(rawPassphraseBytes)
 
-                // Persist encrypted envelope in private SharedPreferences
                 prefs.edit()
                     .putString(PREF_ENCRYPTED_PASSPHRASE, Base64.encodeToString(encryptedBytes, Base64.NO_WRAP))
                     .putString(PREF_GCM_IV, Base64.encodeToString(iv, Base64.NO_WRAP))
                     .apply()
 
                 val chars = String(rawPassphraseBytes, Charsets.UTF_8).toCharArray()
-                rawPassphraseBytes.fill(0) // Clean sensitive bytes from memory
+                rawPassphraseBytes.fill(0)
                 chars
             }
         }
@@ -165,7 +181,6 @@ class DatabaseManager private constructor(private val context: Context) {
                 return entry.secretKey
             }
 
-            // Generate hardware-isolated master AES key inside TEE / StrongBox
             val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
             val keyGenSpec = KeyGenParameterSpec.Builder(
                 MASTER_KEY_ALIAS,
@@ -174,7 +189,7 @@ class DatabaseManager private constructor(private val context: Context) {
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .setKeySize(256)
-                .setUserAuthenticationRequired(false) // Allows background workers to process without user unlock
+                .setUserAuthenticationRequired(false)
                 .build()
 
             keyGenerator.init(keyGenSpec)

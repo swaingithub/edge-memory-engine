@@ -29,7 +29,9 @@ class MainActivity : ComponentActivity() {
         embedder = EventIngestionCoordinator.embedder ?: OnDeviceEmbedder(applicationContext).also {
             CoroutineScope(Dispatchers.IO).launch { it.initialize() }
         }
-        llmEngine = com.edgememory.domain.inference.OnDeviceLlmEngine(applicationContext)
+        llmEngine = com.edgememory.domain.inference.OnDeviceLlmEngine(applicationContext).also {
+            CoroutineScope(Dispatchers.IO).launch { it.initialize() }
+        }
 
         val retriever = CascadedRetriever(eventLogDao, embedder)
 

@@ -7,3 +7,9 @@ DerivedData/
 *.onnx
 *.mlpackage
 xcuserdata/
+full_project_dump*.txt
+venv/
+.env/
+__pycache__/
+*.pyc
+vocab.txt

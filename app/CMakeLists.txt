@@ -4,7 +4,7 @@ project("native_hamming")
 add_library(
         native_hamming
         SHARED
-        src/main/cpp/hamming.cpp
+        src/main/cpp/hamming_neon.cpp
         src/main/cpp/native_bridge.cpp)
 
 # Apply ARM NEON flags only when compiling for arm64-v8a

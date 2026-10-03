@@ -1,0 +1,4 @@
+coremltools>=7.0
+onnx>=1.14.0
+torch>=2.0.0
+transformers>=4.30.0

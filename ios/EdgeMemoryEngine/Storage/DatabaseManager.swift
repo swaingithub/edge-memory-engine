@@ -74,8 +74,6 @@ final class DatabaseManager {
     
     func insertEvent(entityUrn: String, action: String = "SHARE_INPUT", sourceApp: String = "ShareExtension", rawText: String, binaryEmbedding: Data) {
         queue.sync {
-            executeRaw(sql: "BEGIN IMMEDIATE TRANSACTION;")
-            
             let sql = "INSERT INTO event_log (entity_urn, timestamp, action, source_app, raw_text, binary_embedding) VALUES (?, ?, ?, ?, ?, ?);"
             var statement: OpaquePointer?
             
@@ -92,13 +90,7 @@ final class DatabaseManager {
                     sqlite3_bind_blob(statement, 6, rawBufferPointer.baseAddress, Int32(binaryEmbedding.count), nil)
                 }
                 
-                if sqlite3_step(statement) == SQLITE_DONE {
-                    executeRaw(sql: "COMMIT TRANSACTION;")
-                } else {
-                    executeRaw(sql: "ROLLBACK TRANSACTION;")
-                }
-            } else {
-                executeRaw(sql: "ROLLBACK TRANSACTION;")
+                sqlite3_step(statement)
             }
             sqlite3_finalize(statement)
         }

@@ -22,7 +22,7 @@ jobs:
       - name: Make scripts and gradlew executable
         run: |
           chmod +x scripts/fetch_models.sh
-          chmod +x gradlew
+          if [ -f "./gradlew" ]; then chmod +x ./gradlew; fi
 
       - name: Download Engine Assets
         run: ./scripts/fetch_models.sh

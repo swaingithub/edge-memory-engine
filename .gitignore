@@ -13,3 +13,7 @@ venv/
 __pycache__/
 *.pyc
 vocab.txt
+
+!gradle/wrapper/gradle-wrapper.jar
+!gradlew
+!gradlew.bat

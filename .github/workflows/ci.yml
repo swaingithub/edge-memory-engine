@@ -19,10 +19,13 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Download Engine Assets
+      - name: Make scripts and gradlew executable
         run: |
           chmod +x scripts/fetch_models.sh
-          ./scripts/fetch_models.sh
+          chmod +x gradlew
+
+      - name: Download Engine Assets
+        run: ./scripts/fetch_models.sh
 
       - name: Build Android Debug APK
         run: ./gradlew assembleDebug

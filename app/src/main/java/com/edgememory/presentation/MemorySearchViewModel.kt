@@ -87,18 +87,22 @@ class MemorySearchViewModel(
                     )
                     
                     // Stage-3: Feed retrieved timeline into On-Device SLM
-                    _isGenerating.value = true
-                    try {
-                        llmEngine.generateAnswerStream(
-                            systemContext = result.formattedTimelinePrompt,
-                            userQuery = query
-                        ).collect { token ->
-                            _streamedAnswer.value += token
+                    if (llmEngine.isReady()) {
+                        _isGenerating.value = true
+                        try {
+                            llmEngine.generateAnswerStream(
+                                systemContext = result.formattedTimelinePrompt,
+                                userQuery = query
+                            ).collect { token ->
+                                _streamedAnswer.value += token
+                            }
+                        } catch (e: Exception) {
+                            _streamedAnswer.value = "Failed to stream answer: ${e.message}"
                         }
-                    } catch (e: Exception) {
-                        _streamedAnswer.value = "Failed to stream answer from LLM: ${e.message}"
+                        _isGenerating.value = false
+                    } else {
+                        _streamedAnswer.value = "Model not found in files/models/. Showing raw timeline results below."
                     }
-                    _isGenerating.value = false
                 }
             } catch (e: Exception) {
                 _uiState.value = SearchUiState.Error(e.localizedMessage ?: "Unknown retrieval error")

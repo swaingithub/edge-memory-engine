@@ -9,6 +9,7 @@ import com.edgememory.data.local.DatabaseManager
 import com.edgememory.data.local.EventLogDao
 import com.edgememory.domain.embedding.OnDeviceEmbedder
 import com.edgememory.domain.retriever.CascadedRetriever
+import com.edgememory.domain.retriever.EventIngestionCoordinator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -25,13 +26,10 @@ class MainActivity : ComponentActivity() {
         // Initialize dependencies
         val dbManager = DatabaseManager.getInstance(applicationContext)
         val eventLogDao = EventLogDao(dbManager)
-        embedder = OnDeviceEmbedder(applicationContext)
-        llmEngine = com.edgememory.domain.inference.OnDeviceLlmEngine(applicationContext)
-
-        CoroutineScope(Dispatchers.IO).launch {
-            embedder.initialize()
-            // Optionally initialize llmEngine here if the model exists, though normally done when ready.
+        embedder = EventIngestionCoordinator.embedder ?: OnDeviceEmbedder(applicationContext).also {
+            CoroutineScope(Dispatchers.IO).launch { it.initialize() }
         }
+        llmEngine = com.edgememory.domain.inference.OnDeviceLlmEngine(applicationContext)
 
         val retriever = CascadedRetriever(eventLogDao, embedder)
 
@@ -54,7 +52,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        embedder.close()
         llmEngine.close()
+        // Do NOT call embedder.close() here as the background ingestion service still uses it!
     }
 }

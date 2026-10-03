@@ -47,17 +47,13 @@ class MemorySearchViewModel(
 
     fun onQueryChanged(newQuery: String) {
         _searchQuery.value = newQuery
-        searchJob?.cancel()
+    }
 
-        if (newQuery.trim().isBlank()) {
-            _uiState.value = SearchUiState.Idle
-            return
-        }
-
-        // 300ms debounce to avoid triggering on every keystroke
-        searchJob = viewModelScope.launch {
-            delay(300)
-            executeSearch(newQuery.trim())
+    fun submitQuery() {
+        val query = _searchQuery.value.trim()
+        if (query.isNotEmpty()) {
+            executeSearch(query)
+            _searchQuery.value = "" // clear input after send
         }
     }
 

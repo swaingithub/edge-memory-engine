@@ -1,0 +1,10 @@
+platform :ios, '15.0'
+use_frameworks!
+
+target 'EdgeMemoryEngine' do
+  pod 'SQLCipher', :subspecs => ['fts5']
+end
+
+target 'EdgeMemoryShareExtension' do
+  pod 'SQLCipher', :subspecs => ['fts5']
+end

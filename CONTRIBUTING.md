@@ -3,7 +3,7 @@
 ## Development Guidelines
 
 1. **Native Kernel Parity**
-   - Any modifications to the native vector calculation must maintain bitwise parity between the C++ NEON kernel (`hamming.cpp`), the JNI bridge (`native_bridge.cpp`), and the Apple Silicon bridge (`HammingBridge.cpp`).
+   - Any modifications to the native vector calculation must maintain bitwise parity between the C++ NEON kernel (`hamming_neon.cpp`), the JNI bridge (`native_bridge.cpp`), and the Apple Silicon bridge (`HammingBridge.cpp`).
    - Run `NativeHammingBenchmarkTest` on an `arm64-v8a` device before submitting SIMD changes. Regressions exceeding 2.5 ms per 50,000 vectors will not be merged.
 
 2. **Zero-Media Boundary**
@@ -18,4 +18,4 @@
 - [ ] Code compiles on both Android Studio (NDK 25+) and Xcode 15+.
 - [ ] JNI elements cleanly release heap pointers via `JNI_ABORT` on read-only views.
 - [ ] SQLite queries do not contain unescaped wildcards or unclosed quotes.
-<!-- - [ ] Commits follow Conventional Commits (`feat:`, `fix:`, `perf:`, `refactor:`). -->
+- [ ] Commits follow Conventional Commits (`feat:`, `fix:`, `perf:`, `refactor:`).

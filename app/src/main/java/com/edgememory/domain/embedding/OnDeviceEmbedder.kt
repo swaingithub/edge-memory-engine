@@ -28,7 +28,8 @@ class OnDeviceEmbedder(
 
     companion object {
         private const val MAX_SEQ_LENGTH = 128
-        private const val EMBEDDING_DIM = 512
+        private const val ONNX_DIM = 384  // bge-small is 384 dimensions
+        private const val PADDED_DIM = 512 // Required for 64-byte C++ parity
     }
 
     /**
@@ -88,7 +89,7 @@ class OnDeviceEmbedder(
         val rawLastHiddenState: Array<Array<FloatArray>>
         try {
             session.run(inputs).use { results ->
-                // Output shape: [batch_size=1, seq_len, hidden_dim=512]
+                // Output shape: [batch_size=1, seq_len, hidden_dim=384]
                 @Suppress("UNCHECKED_CAST")
                 rawLastHiddenState = results[0].value as Array<Array<FloatArray>>
             }
@@ -102,17 +103,22 @@ class OnDeviceEmbedder(
         val pooled = meanPooling(rawLastHiddenState[0], tokens.attentionMask)
 
         // 3. Apply L2 Unit Normalization (required for cosine and 1-bit zero-centering)
-        return@withContext l2Normalize(pooled)
+        val normalized = l2Normalize(pooled)
+        
+        // 4. Zero-Pad to 512 dimensions for C++ NEON compatibility
+        val padded = FloatArray(PADDED_DIM) { 0.0f }
+        System.arraycopy(normalized, 0, padded, 0, ONNX_DIM)
+        return@withContext padded
     }
 
     private fun meanPooling(tokenEmbeddings: Array<FloatArray>, attentionMask: LongArray): FloatArray {
-        val result = FloatArray(EMBEDDING_DIM) { 0.0f }
+        val result = FloatArray(ONNX_DIM) { 0.0f }
         var validTokenCount = 0.0f
 
         for (i in attentionMask.indices) {
             if (attentionMask[i] == 1L) {
                 val embedding = tokenEmbeddings[i]
-                for (d in 0 until EMBEDDING_DIM) {
+                for (d in 0 until ONNX_DIM) {
                     result[d] += embedding[d]
                 }
                 validTokenCount += 1.0f
@@ -120,7 +126,7 @@ class OnDeviceEmbedder(
         }
 
         if (validTokenCount > 0.0f) {
-            for (d in 0 until EMBEDDING_DIM) {
+            for (d in 0 until ONNX_DIM) {
                 result[d] /= validTokenCount
             }
         }

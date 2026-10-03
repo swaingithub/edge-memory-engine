@@ -6,10 +6,10 @@ mkdir -p "$ASSETS_DIR"
 
 echo "Downloading BGE-Small ONNX quantized embedding model..."
 curl -L -o "$ASSETS_DIR/bge_small_quant.onnx" \
-  "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model_quantized.onnx"
+  "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model_quantized.onnx?download=true"
 
 echo "Downloading WordPiece vocab..."
 curl -L -o "$ASSETS_DIR/vocab.txt" \
-  "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/vocab.txt"
+  "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/vocab.txt?download=true"
 
 echo "Assets populated successfully."

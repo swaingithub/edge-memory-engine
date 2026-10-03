@@ -1,5 +1,3 @@
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
 
 CREATE TABLE IF NOT EXISTS event_log (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,

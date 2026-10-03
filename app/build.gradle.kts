@@ -14,9 +14,15 @@ android {
         versionCode = 1
         versionName = "1.0"
         
+        ndk {
+            // Target ARM platforms only (ARM NEON hardware)
+            abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
+        }
+
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
+                arguments += "-DANDROID_ARM_NEON=TRUE"
             }
         }
     }

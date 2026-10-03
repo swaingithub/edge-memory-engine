@@ -42,11 +42,9 @@ class CascadedRetriever(
      * 4. Entity timeline hydration for SLM context
      */
     suspend fun retrieve(queryText: String): RetrievalContext = coroutineScope {
-        // Step 1: Generate query 1-bit binary vector
         val queryFloats = embedder.embed(queryText)
         val queryBlob = BitPacker.pack(queryFloats) // Renamed from packFloatsTo1Bit to match actual code
 
-        // Step 2: Parallel execution of Sparse (FTS5) and Dense (1-Bit) channels
         val ftsDeferred = async(Dispatchers.IO) {
             eventLogDao.searchFts(queryText, limit = STAGE1_TOP_K)
         }
@@ -58,10 +56,8 @@ class CascadedRetriever(
         val ftsResults = ftsDeferred.await()
         val binaryResults = binaryDeferred.await()
 
-        // Step 3: Reciprocal Rank Fusion (RRF)
         val fusedCandidates = fuseRankings(ftsResults, binaryResults)
 
-        // Step 4: Extract top unique entities and fetch chronological histories
         val topEntityUrns = fusedCandidates
             .map { it.entityUrn }
             .distinct()

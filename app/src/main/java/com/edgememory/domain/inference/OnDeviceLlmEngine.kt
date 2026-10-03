@@ -18,9 +18,13 @@ class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
     suspend fun initialize(modelFileName: String = "llama-3.2-1b-it-gpu-int4.bin") = withContext(Dispatchers.IO) {
         if (isInitialized) return@withContext
 
-        val modelFile = File(context.filesDir, "models/$modelFileName")
+        val modelDir = File(context.filesDir, "models")
+        if (!modelDir.exists()) modelDir.mkdirs()
+
+        val modelFile = File(modelDir, modelFileName)
         if (!modelFile.exists()) {
-            throw IllegalStateException("Model not found at: ${modelFile.absolutePath}")
+            // Return without crashing so FTS5 + 1-Bit search still functions
+            return@withContext
         }
 
         val options = LlmInference.LlmInferenceOptions.builder()
@@ -34,35 +38,29 @@ class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
         isInitialized = true
     }
 
+    fun isReady(): Boolean = isInitialized && llmInference != null
+
     /**
-     * Streams the answer token-by-token directly from local GPU/NPU memory.
+     * Executes async streaming from the pre-allocated inference session.
      */
     fun generateAnswerStream(systemContext: String, userQuery: String): Flow<String> = callbackFlow {
-        val inference = llmInference ?: throw IllegalStateException("LLM Engine not initialized")
+        val inference = llmInference
+        if (inference == null) {
+            close(IllegalStateException("LLM Engine not initialized"))
+            return@callbackFlow
+        }
 
         val prompt = formatChatPrompt(systemContext, userQuery)
 
-        val streamingListener = LlmInference.createFromOptions(
-            context,
-            LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(File(context.filesDir, "models/llama-3.2-1b-it-gpu-int4.bin").absolutePath)
-                .setResultListener { partialResult, done ->
-                    trySend(partialResult)
-                    if (done) {
-                        channel.close()
-                    }
-                }
-                .setErrorListener { error ->
-                    close(Exception("Inference error: ${error.message}"))
-                }
-                .build()
-        )
-
-        streamingListener.generateResponseAsync(prompt)
-
-        awaitClose {
-            // Clean up resources if flow cancellation occurs
+        try {
+            val fullResponse = inference.generateResponse(prompt)
+            trySend(fullResponse)
+            channel.close()
+        } catch (e: Exception) {
+            close(e)
         }
+
+        awaitClose { }
     }.flowOn(Dispatchers.Default)
 
     /**

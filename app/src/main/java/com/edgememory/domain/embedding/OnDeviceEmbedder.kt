@@ -58,8 +58,12 @@ class OnDeviceEmbedder(
      * Converts raw text into a normalized 512-dimensional float vector.
      */
     suspend fun embed(text: String): FloatArray = withContext(Dispatchers.Default) {
+        // Automatically ensure initialized before embedding
+        if (ortSession == null) {
+            initialize()
+        }
         val session = sessionMutex.withLock {
-            ortSession ?: throw IllegalStateException("OnDeviceEmbedder is not initialized. Call initialize() first.")
+            ortSession ?: throw IllegalStateException("Failed to initialize ONNX Runtime session. Verify bge_small_quant.onnx exists in assets.")
         }
 
         // 1. Tokenize text into input_ids and attention_mask

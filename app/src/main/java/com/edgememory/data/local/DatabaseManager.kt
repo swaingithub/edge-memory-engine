@@ -69,7 +69,7 @@ class DatabaseManager private constructor(private val context: Context) {
             get() = getWritableDatabase(passphraseChars)
 
         val readableDatabase: SQLiteDatabase
-            get() = getReadableDatabase(passphraseChars)
+            get() = getWritableDatabase(passphraseChars) // Workaround SQLCipher bug where read-only creation fails
 
         override fun onConfigure(db: SQLiteDatabase) {
             super.onConfigure(db)

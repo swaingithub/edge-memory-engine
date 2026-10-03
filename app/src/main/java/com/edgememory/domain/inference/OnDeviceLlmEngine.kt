@@ -8,37 +8,53 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+
+enum class LlmState {
+    IDLE, LOADING, MISSING, READY, ERROR
+}
 
 class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
 
     private var llmInference: LlmInference? = null
-    private var isInitialized = false
+    
+    private val _state = MutableStateFlow(LlmState.IDLE)
+    val state: StateFlow<LlmState> = _state.asStateFlow()
 
     suspend fun initialize(modelFileName: String = "llama-3.2-1b-it-gpu-int4.bin") = withContext(Dispatchers.IO) {
-        if (isInitialized) return@withContext
+        if (_state.value == LlmState.READY || _state.value == LlmState.LOADING) return@withContext
 
-        val modelDir = File(context.filesDir, "models")
-        if (!modelDir.exists()) modelDir.mkdirs()
+        _state.value = LlmState.LOADING
 
-        val modelFile = File(modelDir, modelFileName)
-        if (!modelFile.exists()) {
-            // Return without crashing so FTS5 + 1-Bit search still functions
-            return@withContext
+        try {
+            val modelDir = File(context.filesDir, "models")
+            if (!modelDir.exists()) modelDir.mkdirs()
+
+            val modelFile = File(modelDir, modelFileName)
+            if (!modelFile.exists()) {
+                _state.value = LlmState.MISSING
+                return@withContext
+            }
+
+            val options = LlmInference.LlmInferenceOptions.builder()
+                .setModelPath(modelFile.absolutePath)
+                .setMaxTokens(512)
+                .setTemperature(0.2f)
+                .setTopK(40)
+                .build()
+
+            llmInference = LlmInference.createFromOptions(context, options)
+            _state.value = LlmState.READY
+        } catch (e: Exception) {
+            _state.value = LlmState.ERROR
+            android.util.Log.e("OnDeviceLlmEngine", "LLM Init Error", e)
         }
-
-        val options = LlmInference.LlmInferenceOptions.builder()
-            .setModelPath(modelFile.absolutePath)
-            .setMaxTokens(512)            // Bounded generation for mobile battery
-            .setTemperature(0.2f)         // Low temperature for factual precision
-            .setTopK(40)
-            .build()
-
-        llmInference = LlmInference.createFromOptions(context, options)
-        isInitialized = true
     }
 
-    fun isReady(): Boolean = isInitialized && llmInference != null
+    fun isReady(): Boolean = _state.value == LlmState.READY
 
     /**
      * Executes async streaming from the pre-allocated inference session.

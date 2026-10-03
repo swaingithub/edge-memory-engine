@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.edgememory">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Essential System Permissions -->
     <!-- WakeLock & Boot: Allows WorkManager to perform idle event compaction -->
@@ -10,15 +9,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- STRICT ZERO-MEDIA POLICY:
-         Notice that READ_EXTERNAL_STORAGE, READ_MEDIA_IMAGES,
+         READ_EXTERNAL_STORAGE, READ_MEDIA_IMAGES,
          READ_MEDIA_VIDEO, and CAMERA are deliberately ABSENT. -->
 
     <application
         android:name=".EdgeMemoryApp"
         android:allowBackup="false"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:roundIcon="@android:drawable/sym_def_app_icon"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.EdgeMemoryEngine">
 

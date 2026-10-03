@@ -56,9 +56,13 @@ class EventLogDao(private val dbManager: DatabaseManager) {
         val db = dbManager.getReadableDatabase()
         val results = mutableListOf<FtsSearchResult>()
 
-        // Sanitize query to avoid FTS5 syntax errors with special punctuation
-        val sanitizedQuery = query.replace("\"", "").trim()
-        if (sanitizedQuery.isBlank()) return@withContext emptyList()
+        // 1. Strip special SQLite FTS5 characters and keep alphanumeric tokens
+        val tokens = query.replace(Regex("[^A-Za-z0-9 ]"), " ")
+            .trim()
+            .split(Regex("\\s+"))
+            .filter { it.isNotBlank() }
+
+        if (tokens.isEmpty()) return@withContext emptyList()
 
         val sql = """
             SELECT 
@@ -74,8 +78,8 @@ class EventLogDao(private val dbManager: DatabaseManager) {
             LIMIT ?;
         """.trimIndent()
 
-        // Match query with prefix support for the final word
-        val ftsPattern = "$sanitizedQuery*"
+        // 2. Build clean prefix token matching (e.g. "kanpur* train*")
+        val ftsPattern = tokens.joinToString(" ") { "$it*" }
 
         db.rawQuery(sql, arrayOf(ftsPattern, limit.toString())).use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow("event_id")

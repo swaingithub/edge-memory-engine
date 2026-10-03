@@ -115,6 +115,19 @@ class DatabaseManager private constructor(private val context: Context) {
                     )
                 """.trimIndent())
 
+                // 6. Seed a sample test event
+                db.execSQL("""
+                    INSERT INTO event_log (entity_urn, timestamp, action, source_app, raw_text, binary_embedding)
+                    VALUES (
+                        'urn:app:irctc',
+                        ${System.currentTimeMillis()},
+                        'BOOKED',
+                        'com.irctc',
+                        'Train 12004 Lucknow Shatabdi booked to Kanpur Central on 30 Sept. PNR 2849103948.',
+                        zeroblob(64)
+                    );
+                """.trimIndent())
+
                 db.setTransactionSuccessful()
             } finally {
                 db.endTransaction()

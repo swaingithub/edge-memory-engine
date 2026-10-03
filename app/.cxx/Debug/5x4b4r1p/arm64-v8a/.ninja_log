@@ -1,0 +1,4 @@
+# ninja log v5
+2	805	8127478187309285	CMakeFiles/native_hamming.dir/src/main/cpp/native_bridge.cpp.o	290c1067fa238b27
+37	1022	8127478189579606	CMakeFiles/native_hamming.dir/src/main/cpp/hamming_neon.cpp.o	efa2039b0a452955
+1023	2105	8127478200319129	../../../../build/intermediates/cxx/Debug/5x4b4r1p/obj/arm64-v8a/libnative_hamming.so	17717bedf2d7d4b0

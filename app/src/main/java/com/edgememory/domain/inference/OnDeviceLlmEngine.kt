@@ -107,6 +107,6 @@ class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
     override fun close() {
         llmInference?.close()
         llmInference = null
-        isInitialized = false
+        _state.value = LlmState.IDLE
     }
 }

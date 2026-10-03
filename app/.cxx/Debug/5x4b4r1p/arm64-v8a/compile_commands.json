@@ -1,0 +1,12 @@
+[
+{
+  "directory": "C:/Users/Asus/Desktop/edge-memory-engine/app/.cxx/Debug/5x4b4r1p/arm64-v8a",
+  "command": "C:\\Users\\Asus\\AppData\\Local\\Android\\Sdk\\ndk\\27.1.12297006\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=aarch64-none-linux-android26 --sysroot=C:/Users/Asus/AppData/Local/Android/Sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/windows-x86_64/sysroot -Dnative_hamming_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++17 -fno-limit-debug-info  -fPIC -O3 -march=armv8-a+simd -o CMakeFiles\\native_hamming.dir\\src\\main\\cpp\\hamming_neon.cpp.o -c C:\\Users\\Asus\\Desktop\\edge-memory-engine\\app\\src\\main\\cpp\\hamming_neon.cpp",
+  "file": "C:\\Users\\Asus\\Desktop\\edge-memory-engine\\app\\src\\main\\cpp\\hamming_neon.cpp"
+},
+{
+  "directory": "C:/Users/Asus/Desktop/edge-memory-engine/app/.cxx/Debug/5x4b4r1p/arm64-v8a",
+  "command": "C:\\Users\\Asus\\AppData\\Local\\Android\\Sdk\\ndk\\27.1.12297006\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=aarch64-none-linux-android26 --sysroot=C:/Users/Asus/AppData/Local/Android/Sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/windows-x86_64/sysroot -Dnative_hamming_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++17 -fno-limit-debug-info  -fPIC -O3 -march=armv8-a+simd -o CMakeFiles\\native_hamming.dir\\src\\main\\cpp\\native_bridge.cpp.o -c C:\\Users\\Asus\\Desktop\\edge-memory-engine\\app\\src\\main\\cpp\\native_bridge.cpp",
+  "file": "C:\\Users\\Asus\\Desktop\\edge-memory-engine\\app\\src\\main\\cpp\\native_bridge.cpp"
+}
+]

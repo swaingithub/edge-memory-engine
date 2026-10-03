@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.edgememory"
     compileSdk = 34
+    ndkVersion = "27.1.12297006"
     
     defaultConfig {
         applicationId = "com.edgememory"

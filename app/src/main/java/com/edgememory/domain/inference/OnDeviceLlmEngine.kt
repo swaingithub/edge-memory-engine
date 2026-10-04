@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import kotlinx.coroutines.sync.withLock
 
 enum class LlmState {
     IDLE, LOADING, MISSING, READY, ERROR
@@ -24,7 +25,7 @@ class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
     private val _state = MutableStateFlow(LlmState.IDLE)
     val state: StateFlow<LlmState> = _state.asStateFlow()
 
-    suspend fun initialize(modelFileName: String = "gemma-2b-it-gpu-int4.bin") = withContext(Dispatchers.IO) {
+    suspend fun initialize(modelFileName: String = "gemma-2b-it-cpu-int4.bin") = withContext(Dispatchers.IO) {
         if (_state.value == LlmState.READY || _state.value == LlmState.LOADING) return@withContext
 
         _state.value = LlmState.LOADING
@@ -59,6 +60,8 @@ class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
     /**
      * Executes async streaming from the pre-allocated inference session.
      */
+    private val inferenceMutex = kotlinx.coroutines.sync.Mutex()
+
     fun generateAnswerStream(systemContext: String, userQuery: String): Flow<String> = callbackFlow {
         val inference = llmInference
         if (inference == null) {
@@ -69,7 +72,10 @@ class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
         val prompt = formatChatPrompt(systemContext, userQuery)
 
         try {
-            val fullResponse = inference.generateResponse(prompt)
+            // Must use a lock! MediaPipe's LlmInference crashes with SIGABRT if called concurrently!
+            val fullResponse = inferenceMutex.withLock {
+                inference.generateResponse(prompt)
+            }
             trySend(fullResponse)
             channel.close()
         } catch (e: Exception) {
@@ -77,7 +83,7 @@ class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
         }
 
         awaitClose { }
-    }.flowOn(Dispatchers.Default)
+    }.flowOn(Dispatchers.IO)
 
     /**
      * Non-streaming direct answer fallback.
@@ -89,21 +95,17 @@ class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
     }
 
     private fun formatChatPrompt(timelineContext: String, userQuery: String): String {
+        // Keep it extremely simple for Gemma 2B. 
+        // Complex rules cause it to hallucinate and regurgitate the context.
         return """
-            <|begin_of_text|><|start_header_id|>system<|end_header_id|>
-            You are a warm, helpful, and friendly on-device AI memory assistant. 
-            
-            RULES:
-            1. If the user greets you or makes small talk, be friendly and conversational!
-            2. If the user asks a factual question about their past or activity, answer using ONLY the HISTORICAL TIMELINE below.
-            3. If they ask about an event that is missing from the timeline, politely let them know you don't see a record of it in their recent activity.
-            4. Keep responses concise and natural.
-            
-            HISTORICAL TIMELINE:
-            $timelineContext
-            <|eot_id|><|start_header_id|>user<|end_header_id|>
-            $userQuery<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-        """.trimIndent()
+<start_of_turn>user
+Context from my recent phone activity:
+$timelineContext
+
+Based ONLY on the context above, answer this question:
+$userQuery<end_of_turn>
+<start_of_turn>model
+""".trimIndent()
     }
 
     override fun close() {

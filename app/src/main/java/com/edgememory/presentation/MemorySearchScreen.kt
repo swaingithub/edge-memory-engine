@@ -27,7 +27,6 @@ import com.edgememory.data.model.EventRecord
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,17 +35,14 @@ fun MemorySearchScreen(
     modifier: Modifier = Modifier
 ) {
     val query by viewModel.searchQuery.collectAsState()
-    val state by viewModel.uiState.collectAsState()
-    val streamedAnswer by viewModel.streamedAnswer.collectAsState()
+    val messages by viewModel.messages.collectAsState()
     val isGenerating by viewModel.isGenerating.collectAsState()
     
     val listState = rememberLazyListState()
-    val coroutineScope = rememberCoroutineScope()
 
-    // Auto-scroll to bottom when new content streams
-    LaunchedEffect(streamedAnswer, state) {
-        if (listState.layoutInfo.totalItemsCount > 0) {
-            listState.animateScrollToItem(listState.layoutInfo.totalItemsCount - 1)
+    LaunchedEffect(messages.size, messages.lastOrNull()?.text?.length) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.size - 1)
         }
     }
 
@@ -76,7 +72,7 @@ fun MemorySearchScreen(
                 query = query,
                 onQueryChanged = viewModel::onQueryChanged,
                 onSubmit = viewModel::submitQuery,
-                isGenerating = isGenerating || state is SearchUiState.Searching
+                isGenerating = isGenerating
             )
         },
         modifier = modifier
@@ -87,97 +83,69 @@ fun MemorySearchScreen(
                 .background(MaterialTheme.colorScheme.background)
                 .padding(paddingValues)
         ) {
-            when (val s = state) {
-                is SearchUiState.Idle -> {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = Icons.Default.AutoAwesome, 
-                                contentDescription = null,
-                                modifier = Modifier.size(64.dp),
-                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                "How can I help you remember today?", 
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                        }
+            if (messages.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome, 
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            "How can I help you remember today?", 
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.titleMedium
+                        )
                     }
                 }
-                is SearchUiState.Searching -> {
-                    // Show a temporary bubble or loading indicator
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                    }
-                }
-                is SearchUiState.Empty -> {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp)
-                    ) {
-                        item { UserMessageBubble(text = s.query) }
-                        item { AiMessageBubble(text = "I couldn't find any memories matching that query. (${s.latencyMs} ms)", isGenerating = false) }
-                    }
-                }
-                is SearchUiState.Error -> {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp)
-                    ) {
-                        item { AiMessageBubble(text = "Error: ${s.message}", isGenerating = false, isError = true) }
-                    }
-                }
-                is SearchUiState.Success -> {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        item {
-                            UserMessageBubble(text = s.query)
-                        }
-                        
-                        item {
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    items(messages, key = { it.id }) { msg ->
+                        if (msg.isUser) {
+                            UserMessageBubble(text = msg.text)
+                        } else {
                             AiMessageBubble(
-                                text = streamedAnswer.ifEmpty { "Synthesizing memories..." },
-                                isGenerating = isGenerating
+                                text = msg.text.ifEmpty { "Synthesizing memories..." },
+                                isGenerating = msg.isGenerating,
+                                isError = msg.isError
                             )
-                        }
-                        
-                        // Sources Section
-                        if (s.primaryEvents.isNotEmpty() || s.entityTimelines.isNotEmpty()) {
-                            item {
+                            
+                            // Render context blocks if present
+                            if (msg.primaryEvents.isNotEmpty() || msg.entityTimelines.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(8.dp))
                                 Text(
-                                    text = "Retrieved Context (${s.latencyMs}ms)",
+                                    text = "Retrieved Context (${msg.latencyMs ?: 0}ms)",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(start = 8.dp, top = 8.dp, bottom = 4.dp)
+                                    modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
                                 )
-                            }
-                            
-                            if (s.entityTimelines.isNotEmpty()) {
-                                s.entityTimelines.forEach { (urn, events) ->
-                                    item {
+                                
+                                if (msg.entityTimelines.isNotEmpty()) {
+                                    msg.entityTimelines.forEach { (urn, events) ->
                                         Text(
                                             text = urn,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 12.sp,
                                             color = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
+                                            modifier = Modifier.padding(start = 8.dp, bottom = 4.dp, top = 4.dp)
                                         )
+                                        events.forEach { event ->
+                                            EventCard(event = event)
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                        }
                                     }
-                                    items(events) { event ->
+                                } else {
+                                    msg.primaryEvents.forEach { event ->
                                         EventCard(event = event)
+                                        Spacer(modifier = Modifier.height(8.dp))
                                     }
-                                }
-                            } else {
-                                items(s.primaryEvents) { event ->
-                                    EventCard(event = event)
                                 }
                             }
                         }

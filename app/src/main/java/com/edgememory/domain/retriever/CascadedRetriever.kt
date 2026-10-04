@@ -71,12 +71,19 @@ class CascadedRetriever(
             }
         }
 
-        // Inflate primary hit records
-        val primaryEventIds = fusedCandidates.take(10).map { it.eventId }
+        // Inflate primary hit records (Limit to 2 to save LLM context window!)
+        val primaryEventIds = fusedCandidates.take(2).map { it.eventId }
         val primaryEvents = eventLogDao.getEventsByIds(primaryEventIds)
 
         // Format chronological timeline string for local SLM prompt
-        val formattedPrompt = buildChronologicalContext(entityTimelines, primaryEvents)
+        val rawPrompt = buildChronologicalContext(entityTimelines, primaryEvents)
+        
+        // Truncate to absolutely ensure we never exceed the MediaPipe sequence length limits
+        val formattedPrompt = if (rawPrompt.length > 800) {
+            rawPrompt.take(800) + "\n...[TRUNCATED]"
+        } else {
+            rawPrompt
+        }
 
         RetrievalContext(
             primaryEvents = primaryEvents,
@@ -159,25 +166,21 @@ class CascadedRetriever(
     ): String {
         val sb = StringBuilder()
 
-        if (timelines.isNotEmpty()) {
-            sb.append("HISTORICAL TIMELINES BY ENTITY:\n")
-            for ((urn, events) in timelines) {
-                sb.append("--- Entity: $urn ---\n")
-                for (event in events) {
-                    val dateStr = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
-                        .format(java.util.Date(event.timestamp))
-                    sb.append("  - [$dateStr] ACTION: ${event.action} | APP: ${event.sourceApp} | DETAILS: ${event.rawText}\n")
-                }
-            }
-        } else if (standaloneEvents.isNotEmpty()) {
-            sb.append("RELEVANT LOGGED EVENTS:\n")
-            for (event in standaloneEvents.sortedBy { it.timestamp }) {
-                val dateStr = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+        val allEvents = (timelines.values.flatten() + standaloneEvents)
+            .distinctBy { it.eventId }
+            .sortedBy { it.timestamp }
+
+        if (allEvents.isNotEmpty()) {
+            for (event in allEvents) {
+                val dateStr = java.text.SimpleDateFormat("MMM dd, HH:mm", java.util.Locale.US)
                     .format(java.util.Date(event.timestamp))
-                sb.append("  - [$dateStr] ACTION: ${event.action} | DETAILS: ${event.rawText}\n")
+                
+                // Format nicely as natural English so the tiny SLM understands it
+                sb.append("At $dateStr, the user was looking at ${event.sourceApp}. ")
+                sb.append("The screen contained the following text: \"${event.rawText.trim()}\"\n\n")
             }
         } else {
-            sb.append("No matching activity logs found.")
+            sb.append("No memory records found.")
         }
 
         return sb.toString()

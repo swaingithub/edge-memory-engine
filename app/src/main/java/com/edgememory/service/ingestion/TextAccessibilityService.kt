@@ -94,22 +94,19 @@ class TextAccessibilityService : AccessibilityService() {
     private fun extractTextFromNode(node: AccessibilityNodeInfo?, collector: StringBuilder) {
         if (node == null) return
 
-        // Drop passwords, ImageView, VideoView, and empty containers
-        if (!IngestionSanitizer.isNodeSafe(node)) {
-            return
+        // Only extract text if the node is safe
+        if (IngestionSanitizer.isNodeSafe(node)) {
+            val text = node.text?.toString()
+            val desc = node.contentDescription?.toString()
+
+            if (!text.isNullOrBlank()) {
+                collector.append(text).append(" ")
+            } else if (!desc.isNullOrBlank()) {
+                collector.append(desc).append(" ")
+            }
         }
 
-        // Extract visible text or content descriptions
-        val text = node.text?.toString()
-        val desc = node.contentDescription?.toString()
-
-        if (!text.isNullOrBlank()) {
-            collector.append(text).append(" ")
-        } else if (!desc.isNullOrBlank()) {
-            collector.append(desc).append(" ")
-        }
-
-        // Traverse layout children
+        // ALWAYS traverse layout children, even if the parent container itself has no text!
         val count = node.childCount
         for (i in 0 until count) {
             val child = node.getChild(i)

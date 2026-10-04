@@ -70,6 +70,9 @@ class EventLogDao(private val dbManager: DatabaseManager) {
                 e.entity_urn, 
                 e.raw_text, 
                 e.timestamp,
+                e.action,
+                e.source_app,
+                e.binary_embedding,
                 fts.rank AS bm25_rank
             FROM event_fts fts
             JOIN event_log e ON fts.rowid = e.event_id

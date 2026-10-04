@@ -24,7 +24,7 @@ class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
     private val _state = MutableStateFlow(LlmState.IDLE)
     val state: StateFlow<LlmState> = _state.asStateFlow()
 
-    suspend fun initialize(modelFileName: String = "llama-3.2-1b-it-gpu-int4.bin") = withContext(Dispatchers.IO) {
+    suspend fun initialize(modelFileName: String = "gemma-2b-it-gpu-int4.bin") = withContext(Dispatchers.IO) {
         if (_state.value == LlmState.READY || _state.value == LlmState.LOADING) return@withContext
 
         _state.value = LlmState.LOADING

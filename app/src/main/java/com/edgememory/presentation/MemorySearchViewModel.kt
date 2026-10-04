@@ -99,7 +99,7 @@ class MemorySearchViewModel(
                         _streamedAnswer.value = "Model is currently loading... Showing raw timeline results below."
                     }
                     com.edgememory.domain.inference.LlmState.MISSING -> {
-                        _streamedAnswer.value = "LLM Model not found! Please adb push llama-3.2-1b-it-gpu-int4.bin to /data/user/0/com.edgememory/files/models/. Showing raw timeline results below."
+                        _streamedAnswer.value = "LLM Model not found! Please adb push gemma-2b-it-gpu-int4.bin to /data/user/0/com.edgememory/files/models/. Showing raw timeline results below."
                     }
                     com.edgememory.domain.inference.LlmState.ERROR -> {
                         _streamedAnswer.value = "LLM Engine failed to initialize. Showing raw timeline results below."

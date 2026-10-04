@@ -91,11 +91,13 @@ class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
     private fun formatChatPrompt(timelineContext: String, userQuery: String): String {
         return """
             <|begin_of_text|><|start_header_id|>system<|end_header_id|>
-            You are a private on-device memory assistant. Answer the user question accurately using ONLY the logged activity timeline below.
+            You are a warm, helpful, and friendly on-device AI memory assistant. 
             
             RULES:
-            1. If an event or booking was rescheduled or changed, state BOTH original and updated information clearly.
-            2. If the context does not contain the answer, reply: "I do not have record of that in your logged activity."
+            1. If the user greets you or makes small talk, be friendly and conversational!
+            2. If the user asks a factual question about their past or activity, answer using ONLY the HISTORICAL TIMELINE below.
+            3. If they ask about an event that is missing from the timeline, politely let them know you don't see a record of it in their recent activity.
+            4. Keep responses concise and natural.
             
             HISTORICAL TIMELINE:
             $timelineContext

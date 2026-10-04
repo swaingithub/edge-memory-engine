@@ -71,45 +71,41 @@ class MemorySearchViewModel(
                 val result = cascadedRetriever.retrieve(query)
                 val latency = System.currentTimeMillis() - startTime
 
-                if (result.primaryEvents.isEmpty() && result.entityTimelines.isEmpty()) {
-                    _uiState.value = SearchUiState.Empty(query, latency)
-                } else {
-                    _uiState.value = SearchUiState.Success(
-                        query = query,
-                        latencyMs = latency,
-                        primaryEvents = result.primaryEvents,
-                        entityTimelines = result.entityTimelines,
-                        promptContext = result.formattedTimelinePrompt
-                    )
-                    
-                    // Stage-3: Feed retrieved timeline into On-Device SLM
-                    when (llmEngine.state.value) {
-                        com.edgememory.domain.inference.LlmState.READY -> {
-                            _isGenerating.value = true
-                            try {
-                                llmEngine.generateAnswerStream(
-                                    systemContext = result.formattedTimelinePrompt,
-                                    userQuery = query
-                                ).collect { token ->
-                                    _streamedAnswer.value += token
-                                }
-                            } catch (e: Exception) {
-                                _streamedAnswer.value = "Failed to stream answer: ${e.message}"
+                _uiState.value = SearchUiState.Success(
+                    query = query,
+                    latencyMs = latency,
+                    primaryEvents = result.primaryEvents,
+                    entityTimelines = result.entityTimelines,
+                    promptContext = result.formattedTimelinePrompt
+                )
+                
+                // Stage-3: Feed retrieved timeline into On-Device SLM
+                when (llmEngine.state.value) {
+                    com.edgememory.domain.inference.LlmState.READY -> {
+                        _isGenerating.value = true
+                        try {
+                            llmEngine.generateAnswerStream(
+                                systemContext = result.formattedTimelinePrompt,
+                                userQuery = query
+                            ).collect { token ->
+                                _streamedAnswer.value += token
                             }
-                            _isGenerating.value = false
+                        } catch (e: Exception) {
+                            _streamedAnswer.value = "Failed to stream answer: ${e.message}"
                         }
-                        com.edgememory.domain.inference.LlmState.LOADING -> {
-                            _streamedAnswer.value = "Model is currently loading... Showing raw timeline results below."
-                        }
-                        com.edgememory.domain.inference.LlmState.MISSING -> {
-                            _streamedAnswer.value = "LLM Model not found! Please adb push llama-3.2-1b-it-gpu-int4.bin to /data/user/0/com.edgememory/files/models/. Showing raw timeline results below."
-                        }
-                        com.edgememory.domain.inference.LlmState.ERROR -> {
-                            _streamedAnswer.value = "LLM Engine failed to initialize. Showing raw timeline results below."
-                        }
-                        else -> {
-                            _streamedAnswer.value = "LLM Engine idle. Showing raw timeline results below."
-                        }
+                        _isGenerating.value = false
+                    }
+                    com.edgememory.domain.inference.LlmState.LOADING -> {
+                        _streamedAnswer.value = "Model is currently loading... Showing raw timeline results below."
+                    }
+                    com.edgememory.domain.inference.LlmState.MISSING -> {
+                        _streamedAnswer.value = "LLM Model not found! Please adb push llama-3.2-1b-it-gpu-int4.bin to /data/user/0/com.edgememory/files/models/. Showing raw timeline results below."
+                    }
+                    com.edgememory.domain.inference.LlmState.ERROR -> {
+                        _streamedAnswer.value = "LLM Engine failed to initialize. Showing raw timeline results below."
+                    }
+                    else -> {
+                        _streamedAnswer.value = "LLM Engine idle. Showing raw timeline results below."
                     }
                 }
             } catch (e: Exception) {

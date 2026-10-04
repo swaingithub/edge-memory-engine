@@ -29,7 +29,6 @@ class OnDeviceEmbedder(
     companion object {
         private const val MAX_SEQ_LENGTH = 128
         private const val ONNX_DIM = 384  // bge-small is 384 dimensions
-        private const val PADDED_DIM = 512 // Required for 64-byte C++ parity
     }
 
     /**
@@ -103,12 +102,7 @@ class OnDeviceEmbedder(
         val pooled = meanPooling(rawLastHiddenState[0], tokens.attentionMask)
 
         // 3. Apply L2 Unit Normalization (required for cosine and 1-bit zero-centering)
-        val normalized = l2Normalize(pooled)
-        
-        // 4. Zero-Pad to 512 dimensions for C++ NEON compatibility
-        val padded = FloatArray(PADDED_DIM) { 0.0f }
-        System.arraycopy(normalized, 0, padded, 0, ONNX_DIM)
-        return@withContext padded
+        return@withContext l2Normalize(pooled)
     }
 
     private fun meanPooling(tokenEmbeddings: Array<FloatArray>, attentionMask: LongArray): FloatArray {

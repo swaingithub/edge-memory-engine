@@ -119,7 +119,7 @@ class NightlyCompactionWorker(
 
             if (rawEvents.isEmpty()) {
                 Log.i(TAG, "No activity logged for $dateKey. Inserting empty marker.")
-                insertDailySummary(db, dateKey, "No notable activity.", ByteArray(64))
+                insertDailySummary(db, dateKey, "No notable activity.", ByteArray(48))
                 return@withContext Result.success()
             }
 

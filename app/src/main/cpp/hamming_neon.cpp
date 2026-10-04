@@ -1,10 +1,10 @@
 #include <arm_neon.h>
 #include <cstdint>
 
-// SIMD 128-bit XOR + POPCNT loop over 64 bytes
+// SIMD 128-bit XOR + POPCNT loop over 48 bytes (384 dimensions)
 extern "C" int compute_hamming_distance_simd(const uint8_t* q, const uint8_t* t) {
     int distance = 0;
-    for (int i = 0; i < 64; i += 16) {
+    for (int i = 0; i < 48; i += 16) {
         uint8x16_t vec_q = vld1q_u8(q + i);
         uint8x16_t vec_t = vld1q_u8(t + i);
         

@@ -58,38 +58,36 @@ class CascadedRetriever(
 
         val fusedCandidates = fuseRankings(ftsResults, binaryResults)
 
-        val topEntityUrns = fusedCandidates
-            .map { it.entityUrn }
-            .distinct()
-            .take(FINAL_ENTITY_LIMIT)
+        // Select the top-K highest scoring events matching the question (top 3)
+        val topEventIds = fusedCandidates.take(3).map { it.eventId }
+        val rawTopEvents = eventLogDao.getEventsByIds(topEventIds)
+        // Maintain the fused rank relevance order
+        val idToRank = topEventIds.withIndex().associate { it.value to it.index }
+        val topEvents = rawTopEvents.sortedBy { idToRank[it.eventId] ?: Int.MAX_VALUE }
 
-        val entityTimelines = mutableMapOf<String, List<EventRecord>>()
-        for (urn in topEntityUrns) {
-            val timeline = eventLogDao.getEntityTimeline(urn)
-            if (timeline.isNotEmpty()) {
-                entityTimelines[urn] = timeline
-            }
-        }
-
-        // Inflate primary hit records (Limit to 2 to save LLM context window!)
-        val primaryEventIds = fusedCandidates.take(2).map { it.eventId }
-        val primaryEvents = eventLogDao.getEventsByIds(primaryEventIds)
-
-        // Format chronological timeline string for local SLM prompt
-        val rawPrompt = buildChronologicalContext(entityTimelines, primaryEvents)
+        // Format concise chronological context from top matched events only
+        val rawPrompt = buildChronologicalContext(emptyMap(), topEvents)
         
-        // Truncate to absolutely ensure we never exceed the MediaPipe sequence length limits
-        val formattedPrompt = if (rawPrompt.length > 800) {
-            rawPrompt.take(800) + "\n...[TRUNCATED]"
+        // Increase context budget so full email / screen text is not cut off before key details
+        val formattedPrompt = if (rawPrompt.length > 2500) {
+            rawPrompt.take(2500) + "\n...[TRUNCATED]"
         } else {
             rawPrompt
         }
 
         RetrievalContext(
-            primaryEvents = primaryEvents,
-            entityTimelines = entityTimelines,
+            primaryEvents = topEvents,
+            entityTimelines = emptyMap(),
             formattedTimelinePrompt = formattedPrompt
         )
+    }
+
+    suspend fun purgeSelfEvents() {
+        eventLogDao.deleteEventsBySourceApp("com.edgememory")
+        eventLogDao.deleteEventsBySourceApp("com.android.launcher")
+        eventLogDao.deleteEventsBySourceApp("com.android.launcher3")
+        eventLogDao.deleteEventsBySourceApp("com.oppo.launcher")
+        eventLogDao.deleteEventsBySourceApp("com.coloros.launcher")
     }
 
     /**
@@ -129,17 +127,19 @@ class CascadedRetriever(
         val rrfScoreMap = mutableMapOf<Long, Double>()
         val urnMap = mutableMapOf<Long, String>()
 
-        // Accumulate FTS ranks (1-based index)
+        // FTS keyword matches are high precision (e.g. "gemini", "shopify", "mail")
+        // Weight FTS matches 3x higher so exact text hits always beat ambient background noise
         ftsHits.forEachIndexed { rank, hit ->
-            val score = 1.0 / (RRF_K + (rank + 1))
+            val score = 3.0 / (RRF_K + (rank + 1))
             rrfScoreMap[hit.eventId] = (rrfScoreMap[hit.eventId] ?: 0.0) + score
             urnMap[hit.eventId] = hit.entityUrn
         }
 
-        // Accumulate Binary Hamming ranks (1-based index)
+        // If FTS returned matches, only use binary hits as secondary signal; if no FTS matches, binary hits serve as fallback
+        val binaryWeight = if (ftsHits.isNotEmpty()) 0.5 else 1.0
         binaryHits.forEachIndexed { rank, hit ->
             val eventId = hit.first
-            val score = 1.0 / (RRF_K + (rank + 1))
+            val score = binaryWeight / (RRF_K + (rank + 1))
             rrfScoreMap[eventId] = (rrfScoreMap[eventId] ?: 0.0) + score
             urnMap[eventId] = hit.second
         }

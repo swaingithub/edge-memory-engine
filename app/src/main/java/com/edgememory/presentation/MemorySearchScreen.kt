@@ -117,34 +117,26 @@ fun MemorySearchScreen(
                                 isError = msg.isError
                             )
                             
-                            // Render context blocks if present
-                            if (msg.primaryEvents.isNotEmpty() || msg.entityTimelines.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = "Retrieved Context (${msg.latencyMs ?: 0}ms)",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
-                                )
+                            // Only display sources if user wants to see where the answer came from (max 2 cards, clean presentation)
+                            if (msg.primaryEvents.isNotEmpty() && !msg.isGenerating) {
+                                var showSources by remember { mutableStateOf(false) }
                                 
-                                if (msg.entityTimelines.isNotEmpty()) {
-                                    msg.entityTimelines.forEach { (urn, events) ->
-                                        Text(
-                                            text = urn,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.padding(start = 8.dp, bottom = 4.dp, top = 4.dp)
-                                        )
-                                        events.forEach { event ->
-                                            EventCard(event = event)
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                        }
-                                    }
-                                } else {
-                                    msg.primaryEvents.forEach { event ->
+                                Spacer(modifier = Modifier.height(6.dp))
+                                TextButton(
+                                    onClick = { showSources = !showSources },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = if (showSources) "Hide sources (${msg.primaryEvents.size})" else "View sources (${msg.primaryEvents.size}) • ${msg.latencyMs ?: 0}ms",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                
+                                if (showSources) {
+                                    msg.primaryEvents.take(2).forEach { event ->
                                         EventCard(event = event)
-                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Spacer(modifier = Modifier.height(6.dp))
                                     }
                                 }
                             }

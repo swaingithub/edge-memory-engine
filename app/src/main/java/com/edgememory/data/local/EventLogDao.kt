@@ -224,4 +224,19 @@ class EventLogDao(private val dbManager: DatabaseManager) {
         }
         records
     }
+
+    /**
+     * Purges records originating from blocked or invalid source apps (e.g. self package).
+     */
+    suspend fun deleteEventsBySourceApp(sourceApp: String): Int = withContext(Dispatchers.IO) {
+        val db = dbManager.getWritableDatabase()
+        db.beginTransaction()
+        try {
+            val count = db.delete("event_log", "source_app = ?", arrayOf(sourceApp))
+            db.setTransactionSuccessful()
+            count
+        } finally {
+            db.endTransaction()
+        }
+    }
 }

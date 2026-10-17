@@ -99,10 +99,16 @@ class DatabaseManager private constructor(private val context: Context) {
                     )
                 """.trimIndent())
 
-                // 4. Synchronization Trigger (Keeps complete BEGIN ... END intact)
+                // 4. Synchronization Triggers
                 db.execSQL("""
                     CREATE TRIGGER IF NOT EXISTS trg_event_ai AFTER INSERT ON event_log BEGIN
                         INSERT INTO event_fts(rowid, raw_text) VALUES (new.event_id, new.raw_text);
+                    END
+                """.trimIndent())
+
+                db.execSQL("""
+                    CREATE TRIGGER IF NOT EXISTS trg_event_ad AFTER DELETE ON event_log BEGIN
+                        INSERT INTO event_fts(event_fts, rowid, raw_text) VALUES ('delete', old.event_id, old.raw_text);
                     END
                 """.trimIndent())
 

@@ -34,7 +34,20 @@ object IngestionSanitizer {
         
         // Android System UI Keyboards / Lockscreen PINs
         "com.google.android.inputmethod.latin",
-        "com.android.systemui"
+        "com.android.systemui",
+
+        // Android Launchers / Home Screens (Avoid clock/weather/widget garbage)
+        "com.android.launcher",
+        "com.android.launcher3",
+        "com.google.android.apps.nexuslauncher",
+        "com.oppo.launcher",
+        "com.coloros.launcher",
+        "com.miui.home",
+        "com.sec.android.app.launcher",
+        "com.oneplus.launcher",
+
+        // Self package: Never ingest our own chat interface, search queries, or answers!
+        "com.edgememory"
     )
 
     // -------------------------------------------------------------

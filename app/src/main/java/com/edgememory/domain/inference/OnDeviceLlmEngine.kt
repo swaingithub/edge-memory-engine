@@ -95,15 +95,15 @@ class OnDeviceLlmEngine(private val context: Context) : AutoCloseable {
     }
 
     private fun formatChatPrompt(timelineContext: String, userQuery: String): String {
-        // Keep it extremely simple for Gemma 2B. 
-        // Complex rules cause it to hallucinate and regurgitate the context.
         return """
 <start_of_turn>user
-Context from my recent phone activity:
+Reference text from device:
+---
 $timelineContext
+---
 
-Based ONLY on the context above, answer this question:
-$userQuery<end_of_turn>
+Question: $userQuery
+Instruction: Using strictly the reference text provided above, answer the question directly and factually in 1-2 clear sentences. Mention specific senders, names, subjects, or details present in the text.<end_of_turn>
 <start_of_turn>model
 """.trimIndent()
     }
